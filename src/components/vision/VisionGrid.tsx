@@ -12,6 +12,8 @@ interface VisionGridProps {
   wishes: Wish[];
   categoryFilter: Category | 'all';
   onToggleWish: (id: string) => void;
+  onEditTheory: (theory: Theory) => void;
+  onEditWish: (wish: Wish) => void;
 }
 
 type GridItem = 
@@ -26,7 +28,9 @@ export function VisionGrid({
   theories, 
   wishes, 
   categoryFilter,
-  onToggleWish 
+  onToggleWish,
+  onEditTheory,
+  onEditWish,
 }: VisionGridProps) {
   // Combine and filter all items
   const filteredItems = useMemo(() => {
@@ -41,8 +45,14 @@ export function VisionGrid({
       ? items 
       : items.filter(item => item.data.category === categoryFilter);
 
-    // Interleave items for visual variety
-    return filtered.sort(() => Math.random() - 0.5);
+    // Stable sort by type, then id
+    return filtered.sort((a, b) => {
+      const typeOrder = { theory: 0, wish: 1, image: 2, video: 3 };
+      if (typeOrder[a.type] !== typeOrder[b.type]) {
+        return typeOrder[a.type] - typeOrder[b.type];
+      }
+      return a.data.id.localeCompare(b.data.id);
+    });
   }, [images, videos, theories, wishes, categoryFilter]);
 
   if (filteredItems.length === 0) {
@@ -66,8 +76,8 @@ export function VisionGrid({
           className="animate-fade-in-up"
           style={{ animationDelay: `${index * 50}ms` }}
         >
-          {item.type === 'theory' && <TheoryCard theory={item.data} />}
-          {item.type === 'wish' && <WishCard wish={item.data} onToggle={onToggleWish} />}
+          {item.type === 'theory' && <TheoryCard theory={item.data} onEdit={onEditTheory} />}
+          {item.type === 'wish' && <WishCard wish={item.data} onToggle={onToggleWish} onEdit={onEditWish} />}
           {item.type === 'image' && <ImageCard image={item.data} />}
           {item.type === 'video' && <VideoCard video={item.data} />}
         </div>

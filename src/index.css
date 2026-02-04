@@ -6,55 +6,56 @@
 
 @layer base {
   :root {
-    --background: 20 10% 8%;
-    --foreground: 40 30% 92%;
+    /* Palette: #EADACE, #CDA991, #B2A3A1, #A0765E, #56332B */
+    --background: 11 33% 25%;        /* #56332B - Dark chocolate */
+    --foreground: 26 38% 86%;        /* #EADACE - Light cream */
 
-    --card: 20 8% 12%;
-    --card-foreground: 40 30% 92%;
+    --card: 11 33% 30%;              /* Slightly lighter than bg */
+    --card-foreground: 26 38% 86%;   /* #EADACE */
 
-    --popover: 20 8% 10%;
-    --popover-foreground: 40 30% 92%;
+    --popover: 11 33% 28%;
+    --popover-foreground: 26 38% 86%;
 
-    --primary: 40 60% 55%;
-    --primary-foreground: 20 10% 8%;
+    --primary: 22 27% 50%;           /* #A0765E - Warm terracotta */
+    --primary-foreground: 26 38% 92%;
 
-    --secondary: 20 8% 18%;
-    --secondary-foreground: 40 30% 85%;
+    --secondary: 11 33% 35%;
+    --secondary-foreground: 26 38% 80%;
 
-    --muted: 20 6% 16%;
-    --muted-foreground: 40 15% 55%;
+    --muted: 11 25% 32%;
+    --muted-foreground: 7 9% 66%;    /* #B2A3A1 - Dusty mauve */
 
-    --accent: 35 50% 45%;
-    --accent-foreground: 40 30% 95%;
+    --accent: 24 38% 69%;            /* #CDA991 - Warm tan */
+    --accent-foreground: 11 33% 20%;
 
     --destructive: 0 62% 50%;
-    --destructive-foreground: 40 30% 95%;
+    --destructive-foreground: 26 38% 95%;
 
-    --border: 20 10% 20%;
-    --input: 20 10% 20%;
-    --ring: 40 60% 55%;
+    --border: 11 25% 38%;
+    --input: 11 25% 38%;
+    --ring: 22 27% 50%;
 
     --radius: 0.5rem;
 
-    /* Custom tokens */
-    --gold: 40 60% 55%;
-    --gold-muted: 40 40% 35%;
-    --cream: 40 30% 92%;
-    --cream-muted: 40 20% 70%;
-    --charcoal: 20 10% 8%;
-    --charcoal-light: 20 8% 14%;
-    --sage: 140 15% 35%;
-    --rose-dust: 350 20% 45%;
+    /* Custom tokens - mapped to new palette */
+    --gold: 24 38% 69%;              /* #CDA991 - Warm tan (accent) */
+    --gold-muted: 22 27% 50%;        /* #A0765E - Terracotta */
+    --cream: 26 38% 86%;             /* #EADACE - Light cream */
+    --cream-muted: 7 9% 66%;         /* #B2A3A1 - Dusty mauve */
+    --charcoal: 11 33% 25%;          /* #56332B - Dark chocolate */
+    --charcoal-light: 11 33% 32%;
+    --sage: 7 9% 66%;                /* #B2A3A1 */
+    --rose-dust: 22 27% 50%;         /* #A0765E */
 
     /* Gradients */
-    --gradient-gold: linear-gradient(135deg, hsl(40 60% 55%), hsl(35 50% 45%));
-    --gradient-card: linear-gradient(180deg, hsl(20 8% 14%), hsl(20 8% 10%));
-    --gradient-overlay: linear-gradient(180deg, transparent 0%, hsl(20 10% 8% / 0.8) 100%);
+    --gradient-gold: linear-gradient(135deg, hsl(24 38% 69%), hsl(22 27% 50%));
+    --gradient-card: linear-gradient(180deg, hsl(11 33% 32%), hsl(11 33% 28%));
+    --gradient-overlay: linear-gradient(180deg, transparent 0%, hsl(11 33% 25% / 0.8) 100%);
 
     /* Shadows */
-    --shadow-soft: 0 4px 20px -4px hsl(0 0% 0% / 0.4);
-    --shadow-glow: 0 0 30px -5px hsl(40 60% 55% / 0.2);
-    --shadow-card: 0 8px 32px -8px hsl(0 0% 0% / 0.5);
+    --shadow-soft: 0 4px 20px -4px hsl(11 33% 15% / 0.5);
+    --shadow-glow: 0 0 30px -5px hsl(24 38% 69% / 0.25);
+    --shadow-card: 0 8px 32px -8px hsl(11 33% 10% / 0.6);
 
     /* Typography */
     --font-serif: 'Cormorant Garamond', Georgia, serif;

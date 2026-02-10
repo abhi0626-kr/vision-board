@@ -10,7 +10,8 @@ import { EditTheoryDialog } from '@/components/vision/EditTheoryDialog';
 import { EditWishDialog } from '@/components/vision/EditWishDialog';
 import { EditImageDialog } from '@/components/vision/EditImageDialog';
 import { Button } from '@/components/ui/button';
-import { Focus, LogOut } from 'lucide-react';
+import { ThemeToggle } from '@/components/vision/ThemeToggle';
+import { Focus, LogOut, User } from 'lucide-react';
 import { isSupabaseConfigured, supabase } from '@/lib/supabaseClient';
 import { useAuth } from '@/lib/auth';
 
@@ -327,8 +328,18 @@ const Index = () => {
       <div className="relative">
         <Header onAddTheory={handleAddTheory} onAddWish={handleAddWish} onAddImage={handleAddImage} />
         
-        {/* Logout button in top right */}
-        <div className="absolute top-4 right-4">
+        {/* Top right controls */}
+        <div className="absolute top-4 right-4 flex items-center gap-1">
+          <ThemeToggle />
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => navigate('/profile')}
+            className="text-muted-foreground hover:text-foreground"
+            title="Profile"
+          >
+            <User className="h-5 w-5" />
+          </Button>
           <Button
             variant="ghost"
             size="icon"

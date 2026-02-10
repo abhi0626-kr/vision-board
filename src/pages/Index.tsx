@@ -326,7 +326,7 @@ const Index = () => {
     <div className="min-h-screen bg-background">
       {/* Hero Header */}
       <div className="relative">
-        <Header onAddTheory={handleAddTheory} onAddWish={handleAddWish} onAddImage={handleAddImage} />
+        <Header onAddTheory={handleAddTheory} onAddWish={handleAddWish} onAddImage={handleAddImage} images={images} videos={videos} theories={theories} wishes={wishes} />
         
         {/* Top right controls */}
         <div className="absolute top-4 right-4 flex items-center gap-1">

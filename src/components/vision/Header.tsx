@@ -1,15 +1,62 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { AddContentDialog } from './AddContentDialog';
-import { Theory, Wish, VisionImage } from '@/types/vision';
+import { Theory, Wish, VisionImage, VisionVideo } from '@/types/vision';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { BookOpen, CheckCircle2, ImageIcon, Sparkles } from 'lucide-react';
+
+const DAILY_QUOTES = [
+  "The future belongs to those who believe in the beauty of their dreams.",
+  "What you think, you become. What you feel, you attract. What you imagine, you create.",
+  "Your vision will become clear only when you look into your heart.",
+  "The only way to do great work is to love what you do.",
+  "Dream big, start small, act now.",
+  "Everything you can imagine is real.",
+  "The best way to predict the future is to create it.",
+  "Believe you can and you're halfway there.",
+  "Your limitation—it's only your imagination.",
+  "Turn your wounds into wisdom.",
+  "What we achieve inwardly will change outer reality.",
+  "Success is not final, failure is not fatal: it is the courage to continue that counts.",
+  "The mind is everything. What you think you shall become.",
+  "Go confidently in the direction of your dreams.",
+  "Act as if what you do makes a difference. It does.",
+  "You are never too old to set another goal or to dream a new dream.",
+  "Visualize your highest self and start showing up as her.",
+  "A year from now, you'll wish you had started today.",
+  "Don't watch the clock; do what it does. Keep going.",
+  "Stars can't shine without darkness.",
+  "She remembered who she was and the game changed.",
+  "Be the energy you want to attract.",
+  "Small steps every day lead to big changes.",
+  "You didn't come this far to only come this far.",
+  "What is coming is better than what is gone.",
+  "Difficult roads often lead to beautiful destinations.",
+  "You are the artist of your own life. Don't hand the paintbrush to anyone else.",
+  "Inhale confidence, exhale doubt.",
+  "The universe is not outside of you. Look inside yourself.",
+  "Wake up with determination. Go to bed with satisfaction.",
+  "She designed a life she loved.",
+];
+
+function getDailyQuote(): string {
+  const now = new Date();
+  const dayOfYear = Math.floor(
+    (now.getTime() - new Date(now.getFullYear(), 0, 0).getTime()) / 86400000
+  );
+  return DAILY_QUOTES[dayOfYear % DAILY_QUOTES.length];
+}
 
 interface HeaderProps {
   onAddTheory: (theory: Omit<Theory, 'id'>) => void;
   onAddWish: (wish: Omit<Wish, 'id'>) => void;
   onAddImage: (image: Omit<VisionImage, 'id'>) => void;
+  images?: VisionImage[];
+  videos?: VisionVideo[];
+  theories?: Theory[];
+  wishes?: Wish[];
 }
 
-export function Header({ onAddTheory, onAddWish, onAddImage }: HeaderProps) {
+export function Header({ onAddTheory, onAddWish, onAddImage, images = [], videos = [], theories = [], wishes = [] }: HeaderProps) {
   const [profile, setProfile] = useState({ name: '', avatarUrl: '' });
 
   useEffect(() => {
@@ -24,6 +71,11 @@ export function Header({ onAddTheory, onAddWish, onAddImage }: HeaderProps) {
   const initials = profile.name
     ? profile.name.split(' ').map((n: string) => n[0]).join('').toUpperCase().slice(0, 2)
     : '';
+
+  const dailyQuote = useMemo(() => getDailyQuote(), []);
+
+  const completedWishes = wishes.filter(w => w.completed).length;
+  const totalWishes = wishes.length;
 
   return (
     <header className="relative overflow-hidden py-16 md:py-24">
@@ -64,12 +116,41 @@ export function Header({ onAddTheory, onAddWish, onAddImage }: HeaderProps) {
           <h1 className="font-serif text-4xl md:text-6xl lg:text-7xl font-semibold text-foreground tracking-tight">
             Vision <span className="text-gradient-gold">Board</span>
           </h1>
-          
-          {/* Subtitle */}
-          <p className="font-sans text-lg md:text-xl text-cream-muted max-w-xl mx-auto leading-relaxed">
-            A digital sanctuary for your dreams, philosophies, and aspirations. 
-            Curate your path to becoming.
-          </p>
+
+          {/* Daily Quote */}
+          <div className="max-w-lg mx-auto">
+            <p className="font-serif text-base md:text-lg text-muted-foreground italic leading-relaxed">
+              <Sparkles className="inline h-4 w-4 text-gold mr-1.5 -mt-0.5" />
+              "{dailyQuote}"
+            </p>
+          </div>
+
+          {/* Stats */}
+          <div className="flex items-center justify-center gap-6 md:gap-10 pt-2">
+            <div className="flex flex-col items-center gap-1">
+              <div className="flex items-center gap-1.5 text-gold">
+                <ImageIcon className="h-4 w-4" />
+                <span className="text-2xl font-semibold text-foreground">{images.length + videos.length}</span>
+              </div>
+              <span className="text-xs text-muted-foreground">Media</span>
+            </div>
+            <div className="w-px h-8 bg-border/40" />
+            <div className="flex flex-col items-center gap-1">
+              <div className="flex items-center gap-1.5 text-gold">
+                <BookOpen className="h-4 w-4" />
+                <span className="text-2xl font-semibold text-foreground">{theories.length}</span>
+              </div>
+              <span className="text-xs text-muted-foreground">Theories</span>
+            </div>
+            <div className="w-px h-8 bg-border/40" />
+            <div className="flex flex-col items-center gap-1">
+              <div className="flex items-center gap-1.5 text-gold">
+                <CheckCircle2 className="h-4 w-4" />
+                <span className="text-2xl font-semibold text-foreground">{completedWishes}/{totalWishes}</span>
+              </div>
+              <span className="text-xs text-muted-foreground">Wishes Done</span>
+            </div>
+          </div>
           
           {/* CTA */}
           <div className="pt-4">

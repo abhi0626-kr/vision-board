@@ -3,6 +3,8 @@ import { AddContentDialog } from './AddContentDialog';
 import { Theory, Wish, VisionImage, VisionVideo } from '@/types/vision';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { BookOpen, CheckCircle2, ImageIcon, Sparkles } from 'lucide-react';
+import { useAuth } from '@/lib/auth';
+import { supabase } from '@/lib/supabaseClient';
 
 const DAILY_QUOTES = [
   "The future belongs to those who believe in the beauty of their dreams.",
@@ -57,15 +59,43 @@ interface HeaderProps {
 }
 
 export function Header({ onAddTheory, onAddWish, onAddImage, images = [], videos = [], theories = [], wishes = [] }: HeaderProps) {
+  const { user } = useAuth();
   const [profile, setProfile] = useState({ name: '', avatarUrl: '' });
 
   useEffect(() => {
-    const saved = localStorage.getItem('vision-profile');
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      setProfile({ name: parsed.name || '', avatarUrl: parsed.avatarUrl || '' });
-    }
-  }, []);
+    const loadProfile = async () => {
+      if (!user) return;
+      
+      try {
+        const { data, error } = await supabase
+          .from('user_profiles')
+          .select('name, avatar_url')
+          .eq('user_id', user.id)
+          .single();
+
+        if (error && error.code !== 'PGRST116') {
+          throw error;
+        }
+
+        if (data) {
+          setProfile({ 
+            name: data.name || '', 
+            avatarUrl: data.avatar_url || '' 
+          });
+        }
+      } catch (error) {
+        console.error('Error loading profile:', error);
+        // Fallback to localStorage for backward compatibility
+        const saved = localStorage.getItem('vision-profile');
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          setProfile({ name: parsed.name || '', avatarUrl: parsed.avatarUrl || '' });
+        }
+      }
+    };
+
+    loadProfile();
+  }, [user]);
 
   const firstName = profile.name?.split(' ')[0];
   const initials = profile.name

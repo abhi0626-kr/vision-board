@@ -1,13 +1,14 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/lib/auth';
+import { supabase } from '@/lib/supabaseClient';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Label } from '@/components/ui/label';
-import { ArrowLeft, Camera, Save } from 'lucide-react';
+import { ArrowLeft, Camera, Save, Loader2 } from 'lucide-react';
 import { ThemeToggle } from '@/components/vision/ThemeToggle';
 import { useToast } from '@/hooks/use-toast';
 
@@ -15,22 +16,91 @@ const Profile = () => {
   const navigate = useNavigate();
   const { user } = useAuth();
   const { toast } = useToast();
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
 
-  const [profileData, setProfileData] = useState(() => {
-    const saved = localStorage.getItem('vision-profile');
-    if (saved) return JSON.parse(saved);
-    return {
-      name: '',
-      bio: '',
-      location: '',
-      occupation: '',
-      avatarUrl: '',
-    };
+  const [profileData, setProfileData] = useState({
+    name: '',
+    bio: '',
+    location: '',
+    occupation: '',
+    avatarUrl: '',
   });
 
-  const handleSave = () => {
-    localStorage.setItem('vision-profile', JSON.stringify(profileData));
-    toast({ title: 'Profile saved', description: 'Your details have been updated.' });
+  // Load profile from database
+  useEffect(() => {
+    const loadProfile = async () => {
+      if (!user) return;
+      
+      try {
+        const { data, error } = await supabase
+          .from('user_profiles')
+          .select('*')
+          .eq('user_id', user.id)
+          .single();
+
+        if (error && error.code !== 'PGRST116') {
+          throw error;
+        }
+
+        if (data) {
+          setProfileData({
+            name: data.name || '',
+            bio: data.bio || '',
+            location: data.location || '',
+            occupation: data.occupation || '',
+            avatarUrl: data.avatar_url || '',
+          });
+        }
+      } catch (error) {
+        console.error('Error loading profile:', error);
+        toast({ 
+          title: 'Error loading profile', 
+          description: 'Could not load your profile data.',
+          variant: 'destructive' 
+        });
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadProfile();
+  }, [user, toast]);
+
+  const handleSave = async () => {
+    if (!user) return;
+    
+    setSaving(true);
+    try {
+      const { error } = await supabase
+        .from('user_profiles')
+        .upsert({
+          user_id: user.id,
+          name: profileData.name,
+          bio: profileData.bio,
+          location: profileData.location,
+          occupation: profileData.occupation,
+          avatar_url: profileData.avatarUrl,
+        }, {
+          onConflict: 'user_id'
+        });
+
+      if (error) throw error;
+
+      toast({ 
+        title: 'Profile saved', 
+        description: 'Your details have been updated successfully.' 
+      });
+    } catch (error) {
+      console.error('Error saving profile:', error);
+      toast({ 
+        title: 'Error saving profile', 
+        description: 'Could not save your profile. Please try again.',
+        variant: 'destructive' 
+      });
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -46,6 +116,14 @@ const Profile = () => {
   const initials = profileData.name
     ? profileData.name.split(' ').map((n: string) => n[0]).join('').toUpperCase().slice(0, 2)
     : user?.email?.charAt(0).toUpperCase() || '?';
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-background">
@@ -140,9 +218,13 @@ const Profile = () => {
               <Input value={user?.email || ''} disabled className="opacity-60" />
             </div>
 
-            <Button onClick={handleSave} className="w-full gap-2 bg-primary hover:bg-primary/90">
-              <Save className="h-4 w-4" />
-              Save Profile
+            <Button onClick={handleSave} disabled={saving} className="w-full gap-2 bg-primary hover:bg-primary/90">
+              {saving ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Save className="h-4 w-4" />
+              )}
+              {saving ? 'Saving...' : 'Save Profile'}
             </Button>
           </CardContent>
         </Card>

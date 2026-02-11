@@ -33,3 +33,15 @@ export interface Wish {
 }
 
 export type ContentType = 'image' | 'video' | 'theory' | 'wish';
+
+export interface UserProfile {
+  id: string;
+  user_id: string;
+  name: string | null;
+  bio: string | null;
+  location: string | null;
+  occupation: string | null;
+  avatar_url: string | null;
+  created_at: string;
+  updated_at: string;
+}

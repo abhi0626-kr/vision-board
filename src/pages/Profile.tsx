@@ -25,6 +25,8 @@ const Profile = () => {
     location: '',
     occupation: '',
     avatarUrl: '',
+    aims: '',
+    goals: '',
   });
 
   // Load profile from database
@@ -50,6 +52,8 @@ const Profile = () => {
             location: data.location || '',
             occupation: data.occupation || '',
             avatarUrl: data.avatar_url || '',
+            aims: data.aims || '',
+            goals: data.goals || '',
           });
         }
       } catch (error) {
@@ -81,6 +85,8 @@ const Profile = () => {
           location: profileData.location,
           occupation: profileData.occupation,
           avatar_url: profileData.avatarUrl,
+          aims: profileData.aims,
+          goals: profileData.goals,
         }, {
           onConflict: 'user_id'
         });
@@ -211,6 +217,24 @@ const Profile = () => {
                 value={profileData.bio}
                 onChange={(e) => setProfileData((prev: typeof profileData) => ({ ...prev, bio: e.target.value }))}
                 rows={4}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Aim's</Label>
+              <Textarea
+                placeholder="What are your aims?"
+                value={profileData.aims}
+                onChange={(e) => setProfileData((prev: typeof profileData) => ({ ...prev, aims: e.target.value }))}
+                rows={2}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Goals</Label>
+              <Textarea
+                placeholder="What are your goals?"
+                value={profileData.goals}
+                onChange={(e) => setProfileData((prev: typeof profileData) => ({ ...prev, goals: e.target.value }))}
+                rows={2}
               />
             </div>
             <div className="space-y-2">

@@ -31,6 +31,8 @@ create table if not exists user_profiles (
   location text,
   occupation text,
   avatar_url text,
+  aims text,
+  goals text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );

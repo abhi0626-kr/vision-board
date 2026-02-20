@@ -16,11 +16,14 @@ const Auth = () => {
   // Sign In form
   const [signInEmail, setSignInEmail] = useState('');
   const [signInPassword, setSignInPassword] = useState('');
+  const [showSignInPassword, setShowSignInPassword] = useState(false);
 
   // Sign Up form
   const [signUpEmail, setSignUpEmail] = useState('');
   const [signUpPassword, setSignUpPassword] = useState('');
   const [signUpConfirm, setSignUpConfirm] = useState('');
+  const [showSignUpPassword, setShowSignUpPassword] = useState(false);
+  const [showSignUpConfirm, setShowSignUpConfirm] = useState(false);
 
   const handleSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -117,14 +120,24 @@ const Auth = () => {
                   </div>
                   <div className="space-y-2">
                     <label className="text-sm font-medium">Password</label>
-                    <Input
-                      type="password"
-                      placeholder="••••••••"
-                      value={signInPassword}
-                      onChange={(e) => setSignInPassword(e.target.value)}
-                      required
-                      disabled={loading}
-                    />
+                    <div className="relative">
+                      <Input
+                        type={showSignInPassword ? 'text' : 'password'}
+                        placeholder="••••••••"
+                        value={signInPassword}
+                        onChange={(e) => setSignInPassword(e.target.value)}
+                        required
+                        disabled={loading}
+                      />
+                      <button
+                        type="button"
+                        className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground"
+                        tabIndex={-1}
+                        onClick={() => setShowSignInPassword((v) => !v)}
+                      >
+                        {showSignInPassword ? 'Hide' : 'Show'}
+                      </button>
+                    </div>
                   </div>
                   {error && (
                     <div className="text-sm text-destructive bg-destructive/10 p-3 rounded-md">
@@ -181,25 +194,45 @@ const Auth = () => {
                   </div>
                   <div className="space-y-2">
                     <label className="text-sm font-medium">Password</label>
-                    <Input
-                      type="password"
-                      placeholder="••••••••"
-                      value={signUpPassword}
-                      onChange={(e) => setSignUpPassword(e.target.value)}
-                      required
-                      disabled={loading}
-                    />
+                    <div className="relative">
+                      <Input
+                        type={showSignUpPassword ? 'text' : 'password'}
+                        placeholder="••••••••"
+                        value={signUpPassword}
+                        onChange={(e) => setSignUpPassword(e.target.value)}
+                        required
+                        disabled={loading}
+                      />
+                      <button
+                        type="button"
+                        className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground"
+                        tabIndex={-1}
+                        onClick={() => setShowSignUpPassword((v) => !v)}
+                      >
+                        {showSignUpPassword ? 'Hide' : 'Show'}
+                      </button>
+                    </div>
                   </div>
                   <div className="space-y-2">
                     <label className="text-sm font-medium">Confirm Password</label>
-                    <Input
-                      type="password"
-                      placeholder="••••••••"
-                      value={signUpConfirm}
-                      onChange={(e) => setSignUpConfirm(e.target.value)}
-                      required
-                      disabled={loading}
-                    />
+                    <div className="relative">
+                      <Input
+                        type={showSignUpConfirm ? 'text' : 'password'}
+                        placeholder="••••••••"
+                        value={signUpConfirm}
+                        onChange={(e) => setSignUpConfirm(e.target.value)}
+                        required
+                        disabled={loading}
+                      />
+                      <button
+                        type="button"
+                        className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground"
+                        tabIndex={-1}
+                        onClick={() => setShowSignUpConfirm((v) => !v)}
+                      >
+                        {showSignUpConfirm ? 'Hide' : 'Show'}
+                      </button>
+                    </div>
                   </div>
                   {error && (
                     <div className="text-sm text-destructive bg-destructive/10 p-3 rounded-md">

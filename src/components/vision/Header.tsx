@@ -186,6 +186,24 @@ export function Header({ onAddTheory, onAddWish, onAddImage, images = [], videos
           <div className="pt-4">
             <AddContentDialog onAddTheory={onAddTheory} onAddWish={onAddWish} onAddImage={onAddImage} />
           </div>
+          {/* Floating Focus Mode Button for mobile */}
+          <div
+            className="fixed bottom-4 left-0 w-full flex justify-center z-50 md:static md:pt-4"
+            style={{ pointerEvents: 'none' }}
+          >
+            <div style={{ pointerEvents: 'auto' }} className="block md:hidden w-full max-w-xs px-4">
+              <button
+                className="w-full bg-primary text-white rounded-lg py-3 shadow-lg font-semibold text-base"
+                style={{ boxShadow: '0 4px 16px rgba(0,0,0,0.10)' }}
+                onClick={() => {
+                  const focusBtn = document.querySelector('[data-focus-mode-btn]') as HTMLElement;
+                  if (focusBtn) focusBtn.click();
+                }}
+              >
+                Enter Focus Mode
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </header>

@@ -201,40 +201,42 @@ drop policy if exists "vision_wishes_delete" on vision_wishes;
 create policy "vision_wishes_delete" on vision_wishes
 for delete using (user_id is null or auth.uid() = user_id);
 
--- Optional seed data (public rows) - only insert if tables are empty
-do $$
-begin
-  if not exists (select 1 from vision_images limit 1) then
-    insert into vision_images (src, alt, category)
-    values
-      ('https://images.unsplash.com/photo-1501785888041-af3ef285b470?w=1400', 'Mountain summit at golden hour', 'travel'),
-      ('https://images.unsplash.com/photo-1498050108023-c5249f4df085?w=1400', 'Minimalist workspace sanctuary', 'career'),
-      ('https://images.unsplash.com/photo-1506126613408-eca07ce68773?w=1400', 'Morning meditation practice', 'health');
-  end if;
-
-  if not exists (select 1 from vision_videos limit 1) then
-    insert into vision_videos (url, title, category)
-    values
-      ('https://www.youtube.com/embed/LXb3EKWsInQ', 'Morning Motivation', 'personal');
-  end if;
-
-  if not exists (select 1 from vision_theories limit 1) then
-    insert into vision_theories (title, content, author, category)
-    values
-      ('The Compound Effect', 'Small, seemingly insignificant steps completed consistently over time will create a radical difference.', 'Darren Hardy', 'personal'),
-      ('Amor Fati', 'Love your fate. Not merely bear what is necessary, but love it.', 'Friedrich Nietzsche', 'personal'),
-      ('The Map Is Not The Territory', 'Our perception of reality is not reality itself but our own version of it, or our "map".', 'Alfred Korzybski', 'creativity');
-  end if;
-
-  if not exists (select 1 from vision_wishes limit 1) then
-    insert into vision_wishes (title, description, category, completed, progress)
-    values
-      ('Run a marathon', 'Complete a full 42km marathon', 'health', false, 35),
-      ('Learn a new language', 'Become conversational in Japanese', 'personal', false, 20),
-      ('Visit Japan', 'Experience the culture and beauty of Japan', 'travel', false, 10),
-      ('Build a side project', 'Launch a profitable side business', 'career', true, 100);
-  end if;
-end $$;
+-- Seed data block removed to prevent re-inserting demo items on every migration or deploy.
+-- If you want to seed demo data, run the following block manually in the SQL editor once:
+--
+-- do $$
+-- begin
+--   if not exists (select 1 from vision_images limit 1) then
+--     insert into vision_images (src, alt, category)
+--     values
+--       ('https://images.unsplash.com/photo-1501785888041-af3ef285b470?w=1400', 'Mountain summit at golden hour', 'travel'),
+--       ('https://images.unsplash.com/photo-1498050108023-c5249f4df085?w=1400', 'Minimalist workspace sanctuary', 'career'),
+--       ('https://images.unsplash.com/photo-1506126613408-eca07ce68773?w=1400', 'Morning meditation practice', 'health');
+--   end if;
+--
+--   if not exists (select 1 from vision_videos limit 1) then
+--     insert into vision_videos (url, title, category)
+--     values
+--       ('https://www.youtube.com/embed/LXb3EKWsInQ', 'Morning Motivation', 'personal');
+--   end if;
+--
+--   if not exists (select 1 from vision_theories limit 1) then
+--     insert into vision_theories (title, content, author, category)
+--     values
+--       ('The Compound Effect', 'Small, seemingly insignificant steps completed consistently over time will create a radical difference.', 'Darren Hardy', 'personal'),
+--       ('Amor Fati', 'Love your fate. Not merely bear what is necessary, but love it.', 'Friedrich Nietzsche', 'personal'),
+--       ('The Map Is Not The Territory', 'Our perception of reality is not reality itself but our own version of it, or our "map".', 'Alfred Korzybski', 'creativity');
+--   end if;
+--
+--   if not exists (select 1 from vision_wishes limit 1) then
+--     insert into vision_wishes (title, description, category, completed, progress)
+--     values
+--       ('Run a marathon', 'Complete a full 42km marathon', 'health', false, 35),
+--       ('Learn a new language', 'Become conversational in Japanese', 'personal', false, 20),
+--       ('Visit Japan', 'Experience the culture and beauty of Japan', 'travel', false, 10),
+--       ('Build a side project', 'Launch a profitable side business', 'career', true, 100);
+--   end if;
+-- end $$;
 
 -- Function to automatically create a profile when a new user signs up
 create or replace function public.handle_new_user()

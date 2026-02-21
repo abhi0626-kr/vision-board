@@ -124,15 +124,13 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 🙏 Acknowledgments
 
-- Design inspiration from modern productivity and wellness applications
-- Icons from [Lucide](https://lucide.dev/)
-- UI components from [Radix UI](https://www.radix-ui.com/)
-- Font families: Cormorant Garamond & Inter
 
 ## 📧 Contact
 
 Project Link: [https://github.com/abhi0626-kr/vision-board](https://github.com/abhi0626-kr/vision-board)
 
----
 
 Built with ❤️ for dreamers and doers
+## License
+
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.

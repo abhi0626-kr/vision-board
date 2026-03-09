@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Category, Theory, Wish, VisionImage, VisionVideo } from '@/types/vision';
 import { initialImages, initialVideos, initialTheories, initialWishes } from '@/data/initialData';
@@ -48,6 +48,7 @@ const mapWishRow = (row: any): Wish => ({
 });
 
 const Index = () => {
+  const VAULT_SHORTCUT = '2006';
   const navigate = useNavigate();
   const { user, loading: authLoading, signOut } = useAuth();
   const [images, setImages] = useState<VisionImage[]>([]);
@@ -65,6 +66,39 @@ const Index = () => {
   const [editingTheory, setEditingTheory] = useState<Theory | null>(null);
   const [editingWish, setEditingWish] = useState<Wish | null>(null);
   const [editingImage, setEditingImage] = useState<VisionImage | null>(null);
+  const keyBufferRef = useRef('');
+  const footerTapCountRef = useRef(0);
+  const footerLastTapRef = useRef(0);
+
+  useEffect(() => {
+    const handleSecretShortcut = (event: KeyboardEvent) => {
+      if (event.ctrlKey || event.altKey || event.metaKey || event.key.length !== 1) return;
+
+      keyBufferRef.current = `${keyBufferRef.current}${event.key.toLowerCase()}`.slice(-VAULT_SHORTCUT.length);
+
+      if (keyBufferRef.current === VAULT_SHORTCUT) {
+        keyBufferRef.current = '';
+        navigate('/abhi');
+      }
+    };
+
+    window.addEventListener('keydown', handleSecretShortcut);
+    return () => window.removeEventListener('keydown', handleSecretShortcut);
+  }, [navigate]);
+
+  const handleFooterSecretTap = () => {
+    const now = Date.now();
+    const withinWindow = now - footerLastTapRef.current <= 1200;
+
+    footerTapCountRef.current = withinWindow ? footerTapCountRef.current + 1 : 1;
+    footerLastTapRef.current = now;
+
+    if (footerTapCountRef.current >= 5) {
+      footerTapCountRef.current = 0;
+      footerLastTapRef.current = 0;
+      navigate('/abhi');
+    }
+  };
 
   useEffect(() => {
     if (authLoading) return;
@@ -398,7 +432,10 @@ const Index = () => {
       {/* Footer */}
       <footer className="border-t border-border/30 py-8">
         <div className="container text-center">
-          <p className="font-serif text-sm text-muted-foreground">
+          <p
+            className="font-serif text-sm text-muted-foreground select-none"
+            onClick={handleFooterSecretTap}
+          >
             Your vision, your journey, your becoming.
           </p>
         </div>

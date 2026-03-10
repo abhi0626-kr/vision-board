@@ -5,13 +5,12 @@ import { initialImages, initialVideos, initialTheories, initialWishes } from '@/
 import { Header } from '@/components/vision/Header';
 import { CategoryFilter } from '@/components/vision/CategoryFilter';
 import { VisionGrid } from '@/components/vision/VisionGrid';
-import { FocusMode } from '@/components/vision/FocusMode';
 import { EditTheoryDialog } from '@/components/vision/EditTheoryDialog';
 import { EditWishDialog } from '@/components/vision/EditWishDialog';
 import { EditImageDialog } from '@/components/vision/EditImageDialog';
 import { Button } from '@/components/ui/button';
 import { ThemeToggle } from '@/components/vision/ThemeToggle';
-import { Focus, LogOut, User } from 'lucide-react';
+import { LogOut, User } from 'lucide-react';
 import { isSupabaseConfigured, supabase } from '@/lib/supabaseClient';
 import { useAuth } from '@/lib/auth';
 
@@ -49,6 +48,7 @@ const mapWishRow = (row: any): Wish => ({
 
 const Index = () => {
   const VAULT_SHORTCUT = '2006';
+  const REFLECTION_KEY_PREFIX = 'vision-reflection';
   const navigate = useNavigate();
   const { user, loading: authLoading, signOut } = useAuth();
   const [images, setImages] = useState<VisionImage[]>([]);
@@ -58,14 +58,12 @@ const Index = () => {
   const [categoryFilter, setCategoryFilter] = useState<Category | 'all'>('all');
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
-  
-  // Focus mode state
-  const [focusModeOpen, setFocusModeOpen] = useState(false);
-  
+
   // Edit dialogs state
   const [editingTheory, setEditingTheory] = useState<Theory | null>(null);
   const [editingWish, setEditingWish] = useState<Wish | null>(null);
   const [editingImage, setEditingImage] = useState<VisionImage | null>(null);
+  const [homeLongNotes, setHomeLongNotes] = useState('');
   const keyBufferRef = useRef('');
   const footerTapCountRef = useRef(0);
   const footerLastTapRef = useRef(0);
@@ -100,6 +98,56 @@ const Index = () => {
     }
   };
 
+  const reflectionStorageKey = `${REFLECTION_KEY_PREFIX}-${user?.id || 'guest'}`;
+
+  const handleReflectionSaved = useCallback(
+    (longNotes: string) => {
+      setHomeLongNotes(longNotes);
+
+      if (!user) return;
+
+      try {
+        const existing = localStorage.getItem(reflectionStorageKey);
+        const parsed = existing ? (JSON.parse(existing) as { strengths?: string; weaknesses?: string }) : {};
+        localStorage.setItem(
+          reflectionStorageKey,
+          JSON.stringify({
+            longNotes,
+            strengths: parsed.strengths || '',
+            weaknesses: parsed.weaknesses || '',
+          })
+        );
+      } catch {
+        localStorage.setItem(
+          reflectionStorageKey,
+          JSON.stringify({
+            longNotes,
+            strengths: '',
+            weaknesses: '',
+          })
+        );
+      }
+    },
+    [reflectionStorageKey, user]
+  );
+
+  useEffect(() => {
+    if (!user) return;
+
+    try {
+      const raw = localStorage.getItem(reflectionStorageKey);
+      if (!raw) {
+        setHomeLongNotes('');
+        return;
+      }
+
+      const parsed = JSON.parse(raw) as { longNotes?: string };
+      setHomeLongNotes(parsed.longNotes || '');
+    } catch {
+      setHomeLongNotes('');
+    }
+  }, [reflectionStorageKey, user]);
+
   useEffect(() => {
     if (authLoading) return;
     if (!user) {
@@ -117,11 +165,12 @@ const Index = () => {
       setIsLoading(true);
       setLoadError(null);
 
-      const [imagesResult, videosResult, theoriesResult, wishesResult] = await Promise.all([
+      const [imagesResult, videosResult, theoriesResult, wishesResult, reflectionResult] = await Promise.all([
         supabase.from('vision_images').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
         supabase.from('vision_videos').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
         supabase.from('vision_theories').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
         supabase.from('vision_wishes').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
+        supabase.from('user_reflections').select('long_notes').eq('user_id', user.id).single(),
       ]);
 
       if (!isMounted) return;
@@ -136,6 +185,33 @@ const Index = () => {
       const videosData = videosResult.data?.map(mapVideoRow) ?? [];
       const theoriesData = theoriesResult.data?.map(mapTheoryRow) ?? [];
       const wishesData = wishesResult.data?.map(mapWishRow) ?? [];
+
+      if (!reflectionResult.error || reflectionResult.error.code === 'PGRST116') {
+        const nextLongNotes = reflectionResult.data?.long_notes || '';
+        setHomeLongNotes(nextLongNotes);
+
+        try {
+          const raw = localStorage.getItem(reflectionStorageKey);
+          const parsed = raw ? (JSON.parse(raw) as { strengths?: string; weaknesses?: string }) : {};
+          localStorage.setItem(
+            reflectionStorageKey,
+            JSON.stringify({
+              longNotes: nextLongNotes,
+              strengths: parsed.strengths || '',
+              weaknesses: parsed.weaknesses || '',
+            })
+          );
+        } catch {
+          localStorage.setItem(
+            reflectionStorageKey,
+            JSON.stringify({
+              longNotes: nextLongNotes,
+              strengths: '',
+              weaknesses: '',
+            })
+          );
+        }
+      }
 
       // Show demo data if user has no content at all
       const hasNoData = imagesData.length === 0 && videosData.length === 0 && 
@@ -153,7 +229,7 @@ const Index = () => {
     return () => {
       isMounted = false;
     };
-  }, [user]);
+  }, [reflectionStorageKey, user]);
 
   const handleAddTheory = useCallback(async (newTheory: Omit<Theory, 'id'>) => {
     if (!isSupabaseConfigured || !supabase || !user) {
@@ -360,7 +436,16 @@ const Index = () => {
     <div className="min-h-screen bg-background">
       {/* Hero Header */}
       <div className="relative">
-        <Header onAddTheory={handleAddTheory} onAddWish={handleAddWish} onAddImage={handleAddImage} images={images} videos={videos} theories={theories} wishes={wishes} />
+        <Header
+          onAddTheory={handleAddTheory}
+          onAddWish={handleAddWish}
+          onAddImage={handleAddImage}
+          onReflectionSaved={handleReflectionSaved}
+          images={images}
+          videos={videos}
+          theories={theories}
+          wishes={wishes}
+        />
         
         {/* Top right controls */}
         <div className="absolute top-4 right-4 flex items-center gap-1">
@@ -398,22 +483,19 @@ const Index = () => {
             {loadError}
           </div>
         )}
-        {/* Category Filter + Focus Mode */}
+        {/* Category Filter */}
         <div className="mb-12 space-y-6">
           <CategoryFilter selected={categoryFilter} onChange={setCategoryFilter} />
-          
-          {/* Focus Mode Button */}
-          <div className="flex justify-center">
-            <Button
-              onClick={() => setFocusModeOpen(true)}
-              variant="outline"
-              className="gap-2 border-gold/30 text-gold hover:bg-gold/10 hover:text-gold"
-            >
-              <Focus className="h-4 w-4" />
-              Enter Focus Mode
-            </Button>
-          </div>
         </div>
+
+        {homeLongNotes.trim().length > 0 && (
+          <section className="mb-10 rounded-xl border border-border/40 bg-secondary/25 p-4 md:p-6">
+            <h2 className="mb-2 font-serif text-2xl text-foreground">Long Notes</h2>
+            <p className="whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground md:text-base">
+              {homeLongNotes}
+            </p>
+          </section>
+        )}
         
         {/* Vision Grid */}
         <VisionGrid
@@ -440,16 +522,6 @@ const Index = () => {
           </p>
         </div>
       </footer>
-
-      {/* Focus Mode */}
-      <FocusMode
-        images={images}
-        videos={videos}
-        theories={theories}
-        wishes={wishes}
-        isOpen={focusModeOpen}
-        onClose={() => setFocusModeOpen(false)}
-      />
 
       {/* Edit Dialogs */}
       <EditTheoryDialog

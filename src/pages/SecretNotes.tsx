@@ -7,7 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { ThemeToggle } from '@/components/vision/ThemeToggle';
-import { ArrowLeft, CheckCircle2, ImagePlus, Lock, Loader2, Save, ShieldCheck, Trash2, Video, XCircle } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, ChevronLeft, ChevronRight, ImagePlus, Lock, Loader2, RotateCcw, Save, ShieldCheck, Trash2, Video, X, XCircle } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 
 const SHARED_PASSCODE = '0626';
@@ -18,6 +18,8 @@ const LOCKOUT_STORAGE_KEY = 'secret_notes_lockout_until';
 const LOCAL_NOTE_PREFIX = 'secret_notes_local_';
 const IMAGE_BUCKET = 'secret-note-images';
 const VIDEO_BUCKET = 'secret-note-videos';
+const IMAGE_UPLOAD_BATCH_SIZE = 8;
+const VIDEO_UPLOAD_BATCH_SIZE = 3;
 const SUPABASE_PROJECT_HOST = (() => {
   const url = import.meta.env.VITE_SUPABASE_URL as string | undefined;
   if (!url) return 'unknown-project';
@@ -36,7 +38,18 @@ type StoredMediaRef = {
 };
 
 type DisplayMedia = StoredMediaRef & {
-  url: string;
+  url: string | null;
+  previewUnavailable?: boolean;
+};
+
+type PreviewResult = {
+  items: DisplayMedia[];
+  failed: number;
+};
+
+type UploadResult = {
+  uploadedRefs: StoredMediaRef[];
+  failedCount: number;
 };
 
 type BucketHealth = {
@@ -209,8 +222,58 @@ const SecretNotes = () => {
     images: UNKNOWN_HEALTH,
     videos: UNKNOWN_HEALTH,
   });
+  const [viewerOpen, setViewerOpen] = useState(false);
+  const [viewerType, setViewerType] = useState<'image' | 'video'>('image');
+  const [viewerIndex, setViewerIndex] = useState(0);
   const lastActivityRef = useRef<number>(Date.now());
+  const viewerTouchStartRef = useRef<{ x: number; y: number } | null>(null);
   const localNoteKey = `${LOCAL_NOTE_PREFIX}${user?.id || 'guest'}`;
+
+  const currentViewerItems = viewerType === 'image' ? imagePreviewItems : videoPreviewItems;
+  const currentViewerItem = currentViewerItems[viewerIndex] || null;
+
+  const openViewer = (type: 'image' | 'video', index: number) => {
+    setViewerType(type);
+    setViewerIndex(index);
+    setViewerOpen(true);
+  };
+
+  const moveViewer = (direction: 'next' | 'prev') => {
+    const items = viewerType === 'image' ? imagePreviewItems : videoPreviewItems;
+    if (items.length === 0) return;
+
+    setViewerIndex((prev) => {
+      if (direction === 'next') {
+        return (prev + 1) % items.length;
+      }
+      return (prev - 1 + items.length) % items.length;
+    });
+  };
+
+  const handleViewerTouchStart = (event: React.TouchEvent<HTMLDivElement>) => {
+    const touch = event.changedTouches[0];
+    viewerTouchStartRef.current = { x: touch.clientX, y: touch.clientY };
+  };
+
+  const handleViewerTouchEnd = (event: React.TouchEvent<HTMLDivElement>) => {
+    const start = viewerTouchStartRef.current;
+    if (!start) return;
+
+    const touch = event.changedTouches[0];
+    const deltaX = touch.clientX - start.x;
+    const deltaY = touch.clientY - start.y;
+
+    viewerTouchStartRef.current = null;
+
+    // Only treat mostly-horizontal swipes as navigation.
+    if (Math.abs(deltaX) < 50 || Math.abs(deltaX) < Math.abs(deltaY)) return;
+
+    if (deltaX < 0) {
+      moveViewer('next');
+    } else {
+      moveViewer('prev');
+    }
+  };
 
   const buildStoragePath = (fileName: string): string => {
     const normalizedName = fileName.toLowerCase().replace(/[^a-z0-9.\-_]/g, '-');
@@ -226,27 +289,51 @@ const SecretNotes = () => {
     return data.signedUrl;
   };
 
-  const hydrateMediaPreviews = async (refs: StoredMediaRef[]): Promise<DisplayMedia[]> => {
-    if (refs.length === 0) return [];
+  const hydrateMediaPreviews = async (refs: StoredMediaRef[]): Promise<PreviewResult> => {
+    if (refs.length === 0) return { items: [], failed: 0 };
 
-    const resolved = await Promise.all(
+    const settled = await Promise.allSettled(
       refs.map(async (ref) => {
         const url = await createSignedUrl(ref);
         return { ...ref, url };
       })
     );
 
-    return resolved;
+    const items: DisplayMedia[] = [];
+    let failed = 0;
+
+    for (let index = 0; index < settled.length; index += 1) {
+      const result = settled[index];
+      const ref = refs[index];
+      if (result.status === 'fulfilled') {
+        items.push(result.value);
+      } else {
+        items.push({ ...ref, url: null, previewUnavailable: true });
+        failed += 1;
+      }
+    }
+
+    return { items, failed };
   };
 
   const refreshPreviews = async (nextImages: StoredMediaRef[], nextVideos: StoredMediaRef[]) => {
     try {
-      const [imageItems, videoItems] = await Promise.all([
+      const [imageResult, videoResult] = await Promise.all([
         hydrateMediaPreviews(nextImages),
         hydrateMediaPreviews(nextVideos),
       ]);
-      setImagePreviewItems(imageItems);
-      setVideoPreviewItems(videoItems);
+
+      setImagePreviewItems(imageResult.items);
+      setVideoPreviewItems(videoResult.items);
+
+      const failedCount = imageResult.failed + videoResult.failed;
+      if (failedCount > 0) {
+        toast({
+          title: 'Some previews unavailable',
+          description: `${failedCount} media file(s) could not be previewed.`,
+          variant: 'destructive',
+        });
+      }
     } catch {
       setImagePreviewItems([]);
       setVideoPreviewItems([]);
@@ -388,7 +475,10 @@ const SecretNotes = () => {
     await loadNote();
   };
 
-  const persistVaultPayload = async (payload: VaultPayload, options?: { title?: string; description?: string }) => {
+  const persistVaultPayload = async (
+    payload: VaultPayload,
+    options?: { title?: string; description?: string; silent?: boolean }
+  ) => {
     if (!user) return;
 
     const serialized = serializeVaultPayload(payload);
@@ -408,16 +498,20 @@ const SecretNotes = () => {
 
       localStorage.setItem(localNoteKey, serialized);
 
-      toast({
-        title: options?.title || 'Vault saved',
-        description: options?.description || 'Synced with your account across devices.',
-      });
+      if (!options?.silent) {
+        toast({
+          title: options?.title || 'Vault saved',
+          description: options?.description || 'Synced with your account across devices.',
+        });
+      }
     } catch {
       localStorage.setItem(localNoteKey, serialized);
-      toast({
-        title: 'Saved locally',
-        description: 'Cloud sync failed, but your note is safe on this device.',
-      });
+      if (!options?.silent) {
+        toast({
+          title: 'Saved locally',
+          description: 'Cloud sync failed, but your note is safe on this device.',
+        });
+      }
     } finally {
       setNoteSaving(false);
     }
@@ -474,22 +568,39 @@ const SecretNotes = () => {
     setPasscode('');
   };
 
-  const uploadFilesToBucket = async (files: FileList, bucket: BucketId, maxCount: number): Promise<StoredMediaRef[]> => {
-    if (!user) return [];
+  const uploadFilesToBucket = async (
+    files: FileList,
+    bucket: BucketId,
+    batchSize: number
+  ): Promise<UploadResult> => {
+    if (!user) return { uploadedRefs: [], failedCount: files.length };
 
-    const selected = Array.from(files).slice(0, maxCount);
+    const selected = Array.from(files);
     const uploadedRefs: StoredMediaRef[] = [];
+    let failedCount = 0;
 
-    for (const file of selected) {
-      const path = buildStoragePath(file.name);
-      const { error } = await supabase.storage.from(bucket).upload(path, file, { upsert: false });
-      if (error) {
-        throw error;
+    for (let index = 0; index < selected.length; index += batchSize) {
+      const chunk = selected.slice(index, index + batchSize);
+
+      const chunkResults = await Promise.allSettled(
+        chunk.map(async (file) => {
+          const path = buildStoragePath(file.name);
+          const { error } = await supabase.storage.from(bucket).upload(path, file, { upsert: false });
+          if (error) throw error;
+          return { bucket, path } as StoredMediaRef;
+        })
+      );
+
+      for (const result of chunkResults) {
+        if (result.status === 'fulfilled') {
+          uploadedRefs.push(result.value);
+        } else {
+          failedCount += 1;
+        }
       }
-      uploadedRefs.push({ bucket, path });
     }
 
-    return uploadedRefs;
+    return { uploadedRefs, failedCount };
   };
 
   const checkSingleBucketHealth = async (bucket: BucketId): Promise<BucketHealth> => {
@@ -655,13 +766,27 @@ const SecretNotes = () => {
 
     setUploadingMedia(true);
     try {
-      const uploadedRefs = await uploadFilesToBucket(files, IMAGE_BUCKET, 5);
+      const { uploadedRefs, failedCount } = await uploadFilesToBucket(files, IMAGE_BUCKET, IMAGE_UPLOAD_BATCH_SIZE);
       const nextImages = [...images, ...uploadedRefs];
       setImages(nextImages);
       await refreshPreviews(nextImages, videos);
+
+      await persistVaultPayload(
+        {
+          note,
+          paragraphs,
+          images: nextImages,
+          videos,
+        },
+        { silent: true }
+      );
+
       toast({
         title: 'Photos uploaded',
-        description: `${uploadedRefs.length} photo(s) stored securely.`,
+        description:
+          failedCount > 0
+            ? `${uploadedRefs.length} uploaded, ${failedCount} failed.`
+            : `${uploadedRefs.length} photo(s) stored securely.`,
       });
     } catch (error) {
       const reason = getErrorMessage(error);
@@ -684,13 +809,27 @@ const SecretNotes = () => {
 
     setUploadingMedia(true);
     try {
-      const uploadedRefs = await uploadFilesToBucket(files, VIDEO_BUCKET, 3);
+      const { uploadedRefs, failedCount } = await uploadFilesToBucket(files, VIDEO_BUCKET, VIDEO_UPLOAD_BATCH_SIZE);
       const nextVideos = [...videos, ...uploadedRefs];
       setVideos(nextVideos);
       await refreshPreviews(images, nextVideos);
+
+      await persistVaultPayload(
+        {
+          note,
+          paragraphs,
+          images,
+          videos: nextVideos,
+        },
+        { silent: true }
+      );
+
       toast({
         title: 'Videos uploaded',
-        description: `${uploadedRefs.length} video(s) stored securely.`,
+        description:
+          failedCount > 0
+            ? `${uploadedRefs.length} uploaded, ${failedCount} failed.`
+            : `${uploadedRefs.length} video(s) stored securely.`,
       });
     } catch (error) {
       const reason = getErrorMessage(error);
@@ -723,6 +862,16 @@ const SecretNotes = () => {
         variant: 'destructive',
       });
     }
+
+    await persistVaultPayload(
+      {
+        note,
+        paragraphs,
+        images: nextImages,
+        videos,
+      },
+      { silent: true }
+    );
   };
 
   const removeVideoAt = async (index: number) => {
@@ -741,6 +890,16 @@ const SecretNotes = () => {
         variant: 'destructive',
       });
     }
+
+    await persistVaultPayload(
+      {
+        note,
+        paragraphs,
+        images,
+        videos: nextVideos,
+      },
+      { silent: true }
+    );
   };
 
   const removeParagraphAt = async (index: number) => {
@@ -759,6 +918,34 @@ const SecretNotes = () => {
         description: 'Vault synced after paragraph removal.',
       }
     );
+  };
+
+  const retryPreviewAt = async (type: 'image' | 'video', index: number) => {
+    const source = type === 'image' ? images[index] : videos[index];
+    if (!source) return;
+
+    try {
+      const url = await createSignedUrl(source);
+      if (type === 'image') {
+        setImagePreviewItems((prev) =>
+          prev.map((item, current) => (current === index ? { ...item, url, previewUnavailable: false } : item))
+        );
+      } else {
+        setVideoPreviewItems((prev) =>
+          prev.map((item, current) => (current === index ? { ...item, url, previewUnavailable: false } : item))
+        );
+      }
+      toast({
+        title: 'Preview restored',
+        description: 'Media preview loaded successfully.',
+      });
+    } catch {
+      toast({
+        title: 'Retry failed',
+        description: 'Still unable to load this preview right now.',
+        variant: 'destructive',
+      });
+    }
   };
 
   return (
@@ -868,7 +1055,23 @@ const SecretNotes = () => {
                     <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                       {imagePreviewItems.map((imageItem, index) => (
                         <div key={`${imageItem.path}-${index}`} className="relative overflow-hidden rounded-md border border-border">
-                          <img src={imageItem.url} alt={`Vault upload ${index + 1}`} className="h-24 w-full object-cover" />
+                          {imageItem.url ? (
+                            <button type="button" className="block h-24 w-full" onClick={() => openViewer('image', index)}>
+                              <img src={imageItem.url} alt={`Vault upload ${index + 1}`} className="h-24 w-full object-cover" />
+                            </button>
+                          ) : (
+                            <div className="flex h-24 w-full flex-col items-center justify-center gap-2 bg-muted px-2 text-center text-xs text-muted-foreground">
+                              <span>Preview unavailable</span>
+                              <button
+                                type="button"
+                                className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-[10px]"
+                                onClick={() => retryPreviewAt('image', index)}
+                              >
+                                <RotateCcw className="h-3 w-3" />
+                                Retry
+                              </button>
+                            </div>
+                          )}
                           <button
                             type="button"
                             className="absolute right-1 top-1 rounded bg-background/80 p-1"
@@ -889,7 +1092,23 @@ const SecretNotes = () => {
                     <div className="space-y-2">
                       {videoPreviewItems.map((videoItem, index) => (
                         <div key={`${videoItem.path}-${index}`} className="relative rounded-md border border-border p-2">
-                          <video src={videoItem.url} controls className="h-36 w-full rounded object-cover" />
+                          {videoItem.url ? (
+                            <button type="button" className="block h-36 w-full" onClick={() => openViewer('video', index)}>
+                              <video src={videoItem.url} className="h-36 w-full rounded object-cover" muted />
+                            </button>
+                          ) : (
+                            <div className="flex h-36 w-full flex-col items-center justify-center gap-2 rounded bg-muted px-2 text-center text-xs text-muted-foreground">
+                              <span>Preview unavailable</span>
+                              <button
+                                type="button"
+                                className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-[10px]"
+                                onClick={() => retryPreviewAt('video', index)}
+                              >
+                                <RotateCcw className="h-3 w-3" />
+                                Retry
+                              </button>
+                            </div>
+                          )}
                           <button
                             type="button"
                             className="absolute right-3 top-3 rounded bg-background/80 p-1"
@@ -957,6 +1176,55 @@ const SecretNotes = () => {
           </CardContent>
         </Card>
       </main>
+
+      {viewerOpen && currentViewerItem && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/90 p-4"
+          onTouchStart={handleViewerTouchStart}
+          onTouchEnd={handleViewerTouchEnd}
+        >
+          <button
+            type="button"
+            className="absolute right-4 top-4 rounded-full bg-white/10 p-2 text-white hover:bg-white/20"
+            onClick={() => setViewerOpen(false)}
+            aria-label="Close viewer"
+          >
+            <X className="h-5 w-5" />
+          </button>
+
+          <button
+            type="button"
+            className="absolute left-4 top-1/2 -translate-y-1/2 rounded-full bg-white/10 p-2 text-white hover:bg-white/20"
+            onClick={() => moveViewer('prev')}
+            aria-label="Previous media"
+          >
+            <ChevronLeft className="h-6 w-6" />
+          </button>
+
+          <div className="max-h-[90vh] max-w-[92vw]">
+            {viewerType === 'image' ? (
+              currentViewerItem.url ? (
+                <img src={currentViewerItem.url} alt="Fullscreen preview" className="max-h-[90vh] max-w-[92vw] object-contain" />
+              ) : (
+                <div className="text-sm text-white">Preview unavailable</div>
+              )
+            ) : currentViewerItem.url ? (
+              <video src={currentViewerItem.url} controls autoPlay className="max-h-[90vh] max-w-[92vw] rounded object-contain" />
+            ) : (
+              <div className="text-sm text-white">Preview unavailable</div>
+            )}
+          </div>
+
+          <button
+            type="button"
+            className="absolute right-4 top-1/2 -translate-y-1/2 rounded-full bg-white/10 p-2 text-white hover:bg-white/20"
+            onClick={() => moveViewer('next')}
+            aria-label="Next media"
+          >
+            <ChevronRight className="h-6 w-6" />
+          </button>
+        </div>
+      )}
     </div>
   );
 };

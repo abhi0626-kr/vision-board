@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { ContentType, Category, Theory, Wish, VisionImage } from '@/types/vision';
 import { categoryLabels } from '@/data/initialData';
 import {
@@ -20,8 +21,8 @@ import {
 } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Plus, Quote, Star, Image, Upload, Link, FileText } from 'lucide-react';
-import { isSupabaseConfigured, supabase } from '@/lib/supabaseClient';
 import { useAuth } from '@/lib/auth';
+import { db, isFirebaseConfigured } from '@/lib/firebase';
 import { useToast } from '@/hooks/use-toast';
 
 interface AddContentDialogProps {
@@ -104,24 +105,17 @@ export function AddContentDialog({ onAddTheory, onAddWish, onAddImage, onReflect
         }
       };
 
-      if (!isSupabaseConfigured || !supabase) {
+      if (!isFirebaseConfigured || !db) {
         loadFromLocal();
         return;
       }
 
       setReflectionLoading(true);
       try {
-        const { data, error } = await supabase
-          .from('user_reflections')
-          .select('long_notes, strengths, weaknesses')
-          .eq('user_id', user.id)
-          .single();
+        const snapshot = await getDoc(doc(db, 'user_reflections', user.id));
+        const data = snapshot.exists() ? snapshot.data() : null;
 
-        if (error && error.code !== 'PGRST116') {
-          throw error;
-        }
-
-        const nextLongNotes = data?.long_notes || '';
+        const nextLongNotes = data?.longNotes || '';
         const nextStrengths = data?.strengths || '';
         const nextWeaknesses = data?.weaknesses || '';
 
@@ -210,30 +204,27 @@ export function AddContentDialog({ onAddTheory, onAddWish, onAddImage, onReflect
 
       localStorage.setItem(reflectionStorageKey, JSON.stringify(payload));
 
-      if (!isSupabaseConfigured || !supabase) {
+      if (!isFirebaseConfigured || !db) {
         toast({
           title: 'Saved locally',
-          description: 'Supabase not configured. Reflection saved on this device.',
+          description: 'Firebase not configured. Reflection saved on this device.',
         });
         onReflectionSaved?.(longNotes);
       } else {
         setReflectionSaving(true);
         try {
-          const { error } = await supabase.from('user_reflections').upsert(
-            {
-              user_id: user.id,
-              long_notes: longNotes,
-              strengths,
-              weaknesses,
-            },
-            { onConflict: 'user_id' }
-          );
-
-          if (error) throw error;
+          await setDoc(doc(db, 'user_reflections', user.id), {
+            userId: user.id,
+            longNotes,
+            strengths,
+            weaknesses,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          }, { merge: true });
 
           toast({
             title: 'Reflection synced',
-            description: 'Saved to Supabase and synced across your devices.',
+            description: 'Saved to Firebase and synced across your devices.',
           });
           onReflectionSaved?.(longNotes);
         } catch {

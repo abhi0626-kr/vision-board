@@ -1,10 +1,11 @@
 import { useState, useEffect, useMemo } from 'react';
+import { doc, getDoc } from 'firebase/firestore';
 import { AddContentDialog } from './AddContentDialog';
 import { Theory, Wish, VisionImage, VisionVideo } from '@/types/vision';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { BookOpen, CheckCircle2, ImageIcon, Sparkles } from 'lucide-react';
 import { useAuth } from '@/lib/auth';
-import { supabase } from '@/lib/supabaseClient';
+import { db, isFirebaseConfigured } from '@/lib/firebase';
 
 const DAILY_QUOTES = [
   "The future belongs to those who believe in the beauty of their dreams.",
@@ -68,20 +69,22 @@ export function Header({ onAddTheory, onAddWish, onAddImage, onReflectionSaved, 
       if (!user) return;
       
       try {
-        const { data, error } = await supabase
-          .from('user_profiles')
-          .select('name, avatar_url')
-          .eq('user_id', user.id)
-          .single();
-
-        if (error && error.code !== 'PGRST116') {
-          throw error;
+        if (!isFirebaseConfigured || !db) {
+          const saved = localStorage.getItem('vision-profile');
+          if (saved) {
+            const parsed = JSON.parse(saved);
+            setProfile({ name: parsed.name || '', avatarUrl: parsed.avatarUrl || '' });
+          }
+          return;
         }
+
+        const snapshot = await getDoc(doc(db, 'user_profiles', user.id));
+        const data = snapshot.exists() ? snapshot.data() : null;
 
         if (data) {
           setProfile({ 
             name: data.name || '', 
-            avatarUrl: data.avatar_url || '' 
+            avatarUrl: data.avatarUrl || '' 
           });
         }
       } catch (error) {

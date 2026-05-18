@@ -30,6 +30,8 @@ export interface Wish {
   category: Category;
   completed: boolean;
   progress?: number;
+  createdAt?: string;
+  achievedAt?: string | null;
 }
 
 export type ContentType = 'image' | 'video' | 'theory' | 'wish';

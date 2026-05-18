@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { useAuth } from '@/lib/auth';
-import { supabase } from '@/lib/supabaseClient';
+import { db, isFirebaseConfigured } from '@/lib/firebase';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -32,18 +33,31 @@ const Profile = () => {
   // Load profile from database
   useEffect(() => {
     const loadProfile = async () => {
-      if (!user) return;
+      if (!user) {
+        setLoading(false);
+        return;
+      }
       
       try {
-        const { data, error } = await supabase
-          .from('user_profiles')
-          .select('*')
-          .eq('user_id', user.id)
-          .single();
-
-        if (error && error.code !== 'PGRST116') {
-          throw error;
+        if (!isFirebaseConfigured || !db) {
+          const saved = localStorage.getItem('vision-profile');
+          if (saved) {
+            const parsed = JSON.parse(saved);
+            setProfileData({
+              name: parsed.name || '',
+              bio: parsed.bio || '',
+              location: parsed.location || '',
+              occupation: parsed.occupation || '',
+              avatarUrl: parsed.avatarUrl || '',
+              aims: parsed.aims || '',
+              goals: parsed.goals || '',
+            });
+          }
+          return;
         }
+
+        const snapshot = await getDoc(doc(db, 'user_profiles', user.id));
+        const data = snapshot.exists() ? snapshot.data() : null;
 
         if (data) {
           setProfileData({
@@ -51,7 +65,7 @@ const Profile = () => {
             bio: data.bio || '',
             location: data.location || '',
             occupation: data.occupation || '',
-            avatarUrl: data.avatar_url || '',
+            avatarUrl: data.avatarUrl || '',
             aims: data.aims || '',
             goals: data.goals || '',
           });
@@ -76,22 +90,24 @@ const Profile = () => {
     
     setSaving(true);
     try {
-      const { error } = await supabase
-        .from('user_profiles')
-        .upsert({
-          user_id: user.id,
-          name: profileData.name,
-          bio: profileData.bio,
-          location: profileData.location,
-          occupation: profileData.occupation,
-          avatar_url: profileData.avatarUrl,
-          aims: profileData.aims,
-          goals: profileData.goals,
-        }, {
-          onConflict: 'user_id'
-        });
+      const payload = {
+        userId: user.id,
+        name: profileData.name,
+        bio: profileData.bio,
+        location: profileData.location,
+        occupation: profileData.occupation,
+        avatarUrl: profileData.avatarUrl,
+        aims: profileData.aims,
+        goals: profileData.goals,
+        updatedAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+      };
 
-      if (error) throw error;
+      if (isFirebaseConfigured && db) {
+        await setDoc(doc(db, 'user_profiles', user.id), payload, { merge: true });
+      } else {
+        localStorage.setItem('vision-profile', JSON.stringify(profileData));
+      }
 
       toast({ 
         title: 'Profile saved', 

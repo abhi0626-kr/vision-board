@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, query, updateDoc, where } from 'firebase/firestore';
 import { Category, Theory, Wish, VisionImage, VisionVideo } from '@/types/vision';
-import { initialImages, initialVideos, initialTheories, initialWishes } from '@/data/initialData';
 import { Header } from '@/components/vision/Header';
 import { CategoryFilter } from '@/components/vision/CategoryFilter';
 import { VisionGrid } from '@/components/vision/VisionGrid';
@@ -11,45 +11,62 @@ import { EditImageDialog } from '@/components/vision/EditImageDialog';
 import { Button } from '@/components/ui/button';
 import { ThemeToggle } from '@/components/vision/ThemeToggle';
 import { LogOut, User } from 'lucide-react';
-import { isSupabaseConfigured, supabase } from '@/lib/supabaseClient';
 import { useAuth } from '@/lib/auth';
+import { db, isFirebaseConfigured } from '@/lib/firebase';
+import { useToast } from '@/hooks/use-toast';
 
-const mapImageRow = (row: any): VisionImage => ({
-  id: row.id,
+const mapImageRow = (row: any, id?: string): VisionImage => ({
+  id: id ?? row.id,
   src: row.src,
   alt: row.alt,
   category: row.category as Category,
 });
 
-const mapVideoRow = (row: any): VisionVideo => ({
-  id: row.id,
+const mapVideoRow = (row: any, id?: string): VisionVideo => ({
+  id: id ?? row.id,
   url: row.url,
   title: row.title,
   category: row.category as Category,
   thumbnail: row.thumbnail ?? undefined,
 });
 
-const mapTheoryRow = (row: any): Theory => ({
-  id: row.id,
+const mapTheoryRow = (row: any, id?: string): Theory => ({
+  id: id ?? row.id,
   title: row.title,
   content: row.content,
   author: row.author ?? undefined,
   category: row.category as Category,
 });
 
-const mapWishRow = (row: any): Wish => ({
-  id: row.id,
+const mapWishRow = (row: any, id?: string): Wish => ({
+  id: id ?? row.id,
   title: row.title,
   description: row.description ?? undefined,
   category: row.category as Category,
   completed: row.completed,
   progress: row.progress ?? undefined,
+  createdAt: row.createdAt ?? undefined,
+  achievedAt: row.achievedAt ?? undefined,
 });
+
+const sortByCreatedAtDesc = <T,>(items: T[]) => {
+  return [...items].sort((left, right) => {
+    const leftCreatedAt = (left as { createdAt?: string }).createdAt || '';
+    const rightCreatedAt = (right as { createdAt?: string }).createdAt || '';
+    return rightCreatedAt.localeCompare(leftCreatedAt);
+  });
+};
+
+const createFallbackId = () => {
+  return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : Date.now().toString();
+};
 
 const Index = () => {
   const VAULT_SHORTCUT = '2006';
-  const REFLECTION_KEY_PREFIX = 'vision-reflection';
   const navigate = useNavigate();
+  const { toast } = useToast();
   const { user, loading: authLoading, signOut } = useAuth();
   const [images, setImages] = useState<VisionImage[]>([]);
   const [videos, setVideos] = useState<VisionVideo[]>([]);
@@ -59,7 +76,6 @@ const Index = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  // Edit dialogs state
   const [editingTheory, setEditingTheory] = useState<Theory | null>(null);
   const [editingWish, setEditingWish] = useState<Wish | null>(null);
   const [editingImage, setEditingImage] = useState<VisionImage | null>(null);
@@ -98,338 +114,393 @@ const Index = () => {
     }
   };
 
-  const reflectionStorageKey = `${REFLECTION_KEY_PREFIX}-${user?.id || 'guest'}`;
+  const handleReflectionSaved = useCallback((longNotes: string) => {
+    setHomeLongNotes(longNotes);
+  }, []);
 
-  const handleReflectionSaved = useCallback(
-    (longNotes: string) => {
-      setHomeLongNotes(longNotes);
-
-      if (!user) return;
-
-      try {
-        const existing = localStorage.getItem(reflectionStorageKey);
-        const parsed = existing ? (JSON.parse(existing) as { strengths?: string; weaknesses?: string }) : {};
-        localStorage.setItem(
-          reflectionStorageKey,
-          JSON.stringify({
-            longNotes,
-            strengths: parsed.strengths || '',
-            weaknesses: parsed.weaknesses || '',
-          })
-        );
-      } catch {
-        localStorage.setItem(
-          reflectionStorageKey,
-          JSON.stringify({
-            longNotes,
-            strengths: '',
-            weaknesses: '',
-          })
-        );
-      }
-    },
-    [reflectionStorageKey, user]
-  );
-
-  useEffect(() => {
-    if (!user) return;
-
-    try {
-      const raw = localStorage.getItem(reflectionStorageKey);
-      if (!raw) {
-        setHomeLongNotes('');
-        return;
-      }
-
-      const parsed = JSON.parse(raw) as { longNotes?: string };
-      setHomeLongNotes(parsed.longNotes || '');
-    } catch {
-      setHomeLongNotes('');
-    }
-  }, [reflectionStorageKey, user]);
+  const notifyFirestoreFailure = useCallback((action: string, error: unknown) => {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    console.error(`Failed to ${action}:`, error);
+    toast({
+      title: `Could not ${action}`,
+      description: message,
+      variant: 'destructive',
+    });
+  }, [toast]);
 
   useEffect(() => {
     if (authLoading) return;
     if (!user) {
       navigate('/auth');
-      return;
     }
   }, [user, authLoading, navigate]);
 
   useEffect(() => {
-    if (!isSupabaseConfigured || !supabase || !user) return;
+    if (!user) return;
 
-    let isMounted = true;
+    if (!isFirebaseConfigured || !db) {
+      setLoadError('Firebase is not configured.');
+      return;
+    }
+
+    let active = true;
 
     const loadData = async () => {
       setIsLoading(true);
       setLoadError(null);
 
-      const [imagesResult, videosResult, theoriesResult, wishesResult, reflectionResult] = await Promise.all([
-        supabase.from('vision_images').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
-        supabase.from('vision_videos').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
-        supabase.from('vision_theories').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
-        supabase.from('vision_wishes').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
-        supabase.from('user_reflections').select('long_notes').eq('user_id', user.id).single(),
-      ]);
+      try {
+        const [imagesSnapshot, videosSnapshot, theoriesSnapshot, wishesSnapshot, reflectionSnapshot] = await Promise.all([
+          getDocs(query(collection(db, 'vision_images'), where('userId', '==', user.id))),
+          getDocs(query(collection(db, 'vision_videos'), where('userId', '==', user.id))),
+          getDocs(query(collection(db, 'vision_theories'), where('userId', '==', user.id))),
+          getDocs(query(collection(db, 'vision_wishes'), where('userId', '==', user.id))),
+          getDoc(doc(db, 'user_reflections', user.id)),
+        ]);
 
-      if (!isMounted) return;
+        if (!active) return;
 
-      if (imagesResult.error || videosResult.error || theoriesResult.error || wishesResult.error) {
-        setLoadError('Failed to load data from Supabase.');
-        setIsLoading(false);
-        return;
-      }
-
-      const imagesData = imagesResult.data?.map(mapImageRow) ?? [];
-      const videosData = videosResult.data?.map(mapVideoRow) ?? [];
-      const theoriesData = theoriesResult.data?.map(mapTheoryRow) ?? [];
-      const wishesData = wishesResult.data?.map(mapWishRow) ?? [];
-
-      if (!reflectionResult.error || reflectionResult.error.code === 'PGRST116') {
-        const nextLongNotes = reflectionResult.data?.long_notes || '';
-        setHomeLongNotes(nextLongNotes);
-
-        try {
-          const raw = localStorage.getItem(reflectionStorageKey);
-          const parsed = raw ? (JSON.parse(raw) as { strengths?: string; weaknesses?: string }) : {};
-          localStorage.setItem(
-            reflectionStorageKey,
-            JSON.stringify({
-              longNotes: nextLongNotes,
-              strengths: parsed.strengths || '',
-              weaknesses: parsed.weaknesses || '',
-            })
-          );
-        } catch {
-          localStorage.setItem(
-            reflectionStorageKey,
-            JSON.stringify({
-              longNotes: nextLongNotes,
-              strengths: '',
-              weaknesses: '',
-            })
-          );
+        setImages(sortByCreatedAtDesc(imagesSnapshot.docs.map((entry) => mapImageRow(entry.data(), entry.id))));
+        setVideos(sortByCreatedAtDesc(videosSnapshot.docs.map((entry) => mapVideoRow(entry.data(), entry.id))));
+        setTheories(sortByCreatedAtDesc(theoriesSnapshot.docs.map((entry) => mapTheoryRow(entry.data(), entry.id))));
+        setWishes(sortByCreatedAtDesc(wishesSnapshot.docs.map((entry) => mapWishRow(entry.data(), entry.id))));
+        setHomeLongNotes(reflectionSnapshot.exists() ? (reflectionSnapshot.data().longNotes || '') : '');
+      } catch (error) {
+        console.error('Failed to load Firebase data:', error);
+        if (active) {
+          setLoadError('Failed to load data from Firebase.');
+        }
+      } finally {
+        if (active) {
+          setIsLoading(false);
         }
       }
-
-      // Show demo data if user has no content at all
-      const hasNoData = imagesData.length === 0 && videosData.length === 0 && 
-                        theoriesData.length === 0 && wishesData.length === 0;
-
-      setImages(hasNoData ? initialImages : imagesData);
-      setVideos(hasNoData ? initialVideos : videosData);
-      setTheories(hasNoData ? initialTheories : theoriesData);
-      setWishes(hasNoData ? initialWishes : wishesData);
-      setIsLoading(false);
     };
 
-    loadData();
+    void loadData();
+
+    const imagesQuery = query(collection(db, 'vision_images'), where('userId', '==', user.id));
+    const videosQuery = query(collection(db, 'vision_videos'), where('userId', '==', user.id));
+    const theoriesQuery = query(collection(db, 'vision_theories'), where('userId', '==', user.id));
+    const wishesQuery = query(collection(db, 'vision_wishes'), where('userId', '==', user.id));
+    const reflectionRef = doc(db, 'user_reflections', user.id);
+
+    const unsubscribeImages = onSnapshot(
+      imagesQuery,
+      (snapshot) => {
+        if (!active) return;
+
+        setImages(sortByCreatedAtDesc(snapshot.docs.map((entry) => mapImageRow(entry.data(), entry.id))));
+      },
+      (error) => {
+        if (active) {
+          notifyFirestoreFailure('keep images in sync with Firestore', error);
+          setLoadError('Failed to keep images in sync with Firebase.');
+        }
+      }
+    );
+
+    const unsubscribeVideos = onSnapshot(
+      videosQuery,
+      (snapshot) => {
+        if (!active) return;
+
+        setVideos(sortByCreatedAtDesc(snapshot.docs.map((entry) => mapVideoRow(entry.data(), entry.id))));
+      },
+      (error) => {
+        if (active) {
+          notifyFirestoreFailure('keep videos in sync with Firestore', error);
+          setLoadError('Failed to keep videos in sync with Firebase.');
+        }
+      }
+    );
+
+    const unsubscribeTheories = onSnapshot(
+      theoriesQuery,
+      (snapshot) => {
+        if (!active) return;
+
+        setTheories(sortByCreatedAtDesc(snapshot.docs.map((entry) => mapTheoryRow(entry.data(), entry.id))));
+      },
+      (error) => {
+        if (active) {
+          notifyFirestoreFailure('keep theories in sync with Firestore', error);
+          setLoadError('Failed to keep theories in sync with Firebase.');
+        }
+      }
+    );
+
+    const unsubscribeWishes = onSnapshot(
+      wishesQuery,
+      (snapshot) => {
+        if (!active) return;
+
+        setWishes(sortByCreatedAtDesc(snapshot.docs.map((entry) => mapWishRow(entry.data(), entry.id))));
+      },
+      (error) => {
+        if (active) {
+          notifyFirestoreFailure('keep wishes in sync with Firestore', error);
+          setLoadError('Failed to keep wishes in sync with Firebase.');
+        }
+      }
+    );
+
+    const unsubscribeReflection = onSnapshot(
+      reflectionRef,
+      (snapshot) => {
+        if (!active) return;
+
+        setHomeLongNotes(snapshot.exists() ? (snapshot.data().longNotes || '') : '');
+      },
+      (error) => {
+        if (active) {
+          notifyFirestoreFailure('keep reflections in sync with Firestore', error);
+          setLoadError('Failed to keep reflections in sync with Firebase.');
+        }
+      }
+    );
 
     return () => {
-      isMounted = false;
+      active = false;
+      unsubscribeImages();
+      unsubscribeVideos();
+      unsubscribeTheories();
+      unsubscribeWishes();
+      unsubscribeReflection();
     };
-  }, [reflectionStorageKey, user]);
+  }, [user]);
 
   const handleAddTheory = useCallback(async (newTheory: Omit<Theory, 'id'>) => {
-    if (!isSupabaseConfigured || !supabase || !user) {
-      setTheories(prev => [
-        { ...newTheory, id: Date.now().toString() },
-        ...prev,
-      ]);
+    const createdAt = new Date().toISOString();
+
+    if (!user || !isFirebaseConfigured || !db) {
+      setTheories((prev) => [{ ...newTheory, id: createFallbackId() }, ...prev]);
       return;
     }
 
-    const { data, error } = await supabase
-      .from('vision_theories')
-      .insert({
-        user_id: user.id,
+    try {
+      const ref = await addDoc(collection(db, 'vision_theories'), {
+        userId: user.id,
         title: newTheory.title,
         content: newTheory.content,
         author: newTheory.author ?? null,
         category: newTheory.category,
-      })
-      .select('*')
-      .single();
+        createdAt,
+        updatedAt: createdAt,
+      });
 
-    if (error || !data) {
-      setTheories(prev => [
-        { ...newTheory, id: Date.now().toString() },
-        ...prev,
-      ]);
-      return;
+      setTheories((prev) => [{ ...newTheory, id: ref.id }, ...prev]);
+    } catch (error) {
+      console.error('Failed to add theory:', error);
+      setTheories((prev) => [{ ...newTheory, id: createFallbackId() }, ...prev]);
     }
-
-    setTheories(prev => [mapTheoryRow(data), ...prev]);
   }, [user]);
 
   const handleAddWish = useCallback(async (newWish: Omit<Wish, 'id'>) => {
-    if (!isSupabaseConfigured || !supabase || !user) {
-      setWishes(prev => [
-        { ...newWish, id: Date.now().toString() },
+    const createdAt = new Date().toISOString();
+
+    if (!user || !isFirebaseConfigured || !db) {
+      setWishes((prev) => [
+        {
+          ...newWish,
+          id: createFallbackId(),
+          createdAt,
+          achievedAt: newWish.completed ? createdAt : null,
+        },
         ...prev,
       ]);
       return;
     }
 
-    const { data, error } = await supabase
-      .from('vision_wishes')
-      .insert({
-        user_id: user.id,
+    try {
+      const ref = await addDoc(collection(db, 'vision_wishes'), {
+        userId: user.id,
         title: newWish.title,
         description: newWish.description ?? null,
         category: newWish.category,
         completed: newWish.completed,
         progress: newWish.progress ?? null,
-      })
-      .select('*')
-      .single();
+        createdAt,
+        updatedAt: createdAt,
+        achievedAt: newWish.completed ? createdAt : null,
+      });
 
-    if (error || !data) {
-      setWishes(prev => [
-        { ...newWish, id: Date.now().toString() },
+      setWishes((prev) => [
+        {
+          ...newWish,
+          id: ref.id,
+          createdAt,
+          achievedAt: newWish.completed ? createdAt : null,
+        },
         ...prev,
       ]);
-      return;
+    } catch (error) {
+      console.error('Failed to add wish:', error);
+      setWishes((prev) => [
+        {
+          ...newWish,
+          id: createFallbackId(),
+          createdAt,
+          achievedAt: newWish.completed ? createdAt : null,
+        },
+        ...prev,
+      ]);
     }
-
-    setWishes(prev => [mapWishRow(data), ...prev]);
   }, [user]);
 
   const handleAddImage = useCallback(async (newImage: Omit<VisionImage, 'id'>) => {
-    if (!isSupabaseConfigured || !supabase || !user) {
-      setImages(prev => [
-        { ...newImage, id: Date.now().toString() },
-        ...prev,
-      ]);
+    const createdAt = new Date().toISOString();
+
+    if (!user || !isFirebaseConfigured || !db) {
+      setImages((prev) => [{ ...newImage, id: createFallbackId() }, ...prev]);
       return;
     }
 
-    const { data, error } = await supabase
-      .from('vision_images')
-      .insert({
-        user_id: user.id,
+    try {
+      const ref = await addDoc(collection(db, 'vision_images'), {
+        userId: user.id,
         src: newImage.src,
         alt: newImage.alt,
         category: newImage.category,
-      })
-      .select('*')
-      .single();
+        createdAt,
+        updatedAt: createdAt,
+      });
 
-    if (error || !data) {
-      setImages(prev => [
-        { ...newImage, id: Date.now().toString() },
-        ...prev,
-      ]);
-      return;
+      setImages((prev) => [{ ...newImage, id: ref.id }, ...prev]);
+    } catch (error) {
+      console.error('Failed to add image:', error);
+      setImages((prev) => [{ ...newImage, id: createFallbackId() }, ...prev]);
     }
-
-    setImages(prev => [mapImageRow(data), ...prev]);
   }, [user]);
 
   const handleToggleWish = useCallback(async (id: string) => {
     let nextCompleted = false;
     let nextProgress: number | undefined;
+    let nextAchievedAt: string | null = null;
+    const now = new Date().toISOString();
 
-    setWishes(prev => prev.map(wish => {
+    setWishes((prev) => prev.map((wish) => {
       if (wish.id !== id) return wish;
       nextCompleted = !wish.completed;
       nextProgress = wish.completed ? wish.progress : 100;
-      return { ...wish, completed: nextCompleted, progress: nextProgress };
+      nextAchievedAt = nextCompleted ? (wish.achievedAt ?? now) : null;
+      return { ...wish, completed: nextCompleted, progress: nextProgress, achievedAt: nextAchievedAt ?? undefined };
     }));
 
-    if (!isSupabaseConfigured || !supabase) return;
+    if (!isFirebaseConfigured || !db) return;
 
-    await supabase
-      .from('vision_wishes')
-      .update({
+    try {
+      await updateDoc(doc(db, 'vision_wishes', id), {
         completed: nextCompleted,
         progress: nextProgress ?? null,
-      })
-      .eq('id', id);
+        achievedAt: nextAchievedAt,
+        updatedAt: now,
+      });
+    } catch (error) {
+      notifyFirestoreFailure('update wish', error);
+    }
   }, []);
 
-  // Edit handlers
   const handleSaveTheory = useCallback(async (updatedTheory: Theory) => {
-    setTheories(prev => prev.map(t => t.id === updatedTheory.id ? updatedTheory : t));
+    setTheories((prev) => prev.map((theory) => (theory.id === updatedTheory.id ? updatedTheory : theory)));
 
-    if (!isSupabaseConfigured || !supabase) return;
+    if (!isFirebaseConfigured || !db) return;
 
-    await supabase
-      .from('vision_theories')
-      .update({
+    try {
+      await updateDoc(doc(db, 'vision_theories', updatedTheory.id), {
         title: updatedTheory.title,
         content: updatedTheory.content,
         author: updatedTheory.author ?? null,
         category: updatedTheory.category,
-      })
-      .eq('id', updatedTheory.id);
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (error) {
+      notifyFirestoreFailure('update theory', error);
+    }
   }, []);
 
   const handleDeleteTheory = useCallback(async (id: string) => {
-    setTheories(prev => prev.filter(t => t.id !== id));
+    setTheories((prev) => prev.filter((theory) => theory.id !== id));
 
-    if (!isSupabaseConfigured || !supabase) return;
+    if (!isFirebaseConfigured || !db) return;
 
-    await supabase
-      .from('vision_theories')
-      .delete()
-      .eq('id', id);
+    try {
+      await deleteDoc(doc(db, 'vision_theories', id));
+    } catch (error) {
+      notifyFirestoreFailure('delete theory', error);
+    }
   }, []);
 
   const handleSaveWish = useCallback(async (updatedWish: Wish) => {
-    setWishes(prev => prev.map(w => w.id === updatedWish.id ? updatedWish : w));
+    let nextAchievedAt: string | null = updatedWish.achievedAt ?? null;
+    const now = new Date().toISOString();
 
-    if (!isSupabaseConfigured || !supabase) return;
+    setWishes((prev) => prev.map((wish) => {
+      if (wish.id !== updatedWish.id) return wish;
 
-    await supabase
-      .from('vision_wishes')
-      .update({
+      nextAchievedAt = updatedWish.completed
+        ? (updatedWish.achievedAt ?? wish.achievedAt ?? now)
+        : null;
+
+      return { ...updatedWish, achievedAt: nextAchievedAt ?? undefined };
+    }));
+
+    if (!isFirebaseConfigured || !db) return;
+
+    try {
+      await updateDoc(doc(db, 'vision_wishes', updatedWish.id), {
         title: updatedWish.title,
         description: updatedWish.description ?? null,
         category: updatedWish.category,
         completed: updatedWish.completed,
         progress: updatedWish.progress ?? null,
-      })
-      .eq('id', updatedWish.id);
+        achievedAt: nextAchievedAt,
+        updatedAt: now,
+      });
+    } catch (error) {
+      notifyFirestoreFailure('update wish', error);
+    }
   }, []);
 
   const handleDeleteWish = useCallback(async (id: string) => {
-    setWishes(prev => prev.filter(w => w.id !== id));
+    setWishes((prev) => prev.filter((wish) => wish.id !== id));
 
-    if (!isSupabaseConfigured || !supabase) return;
+    if (!isFirebaseConfigured || !db) return;
 
-    await supabase
-      .from('vision_wishes')
-      .delete()
-      .eq('id', id);
+    try {
+      await deleteDoc(doc(db, 'vision_wishes', id));
+    } catch (error) {
+      notifyFirestoreFailure('delete wish', error);
+    }
   }, []);
 
-  // Image handlers
   const handleSaveImage = useCallback(async (updatedImage: VisionImage) => {
-    setImages(prev => prev.map(img => img.id === updatedImage.id ? updatedImage : img));
+    setImages((prev) => prev.map((image) => (image.id === updatedImage.id ? updatedImage : image)));
 
-    if (!isSupabaseConfigured || !supabase) return;
+    if (!isFirebaseConfigured || !db) return;
 
-    await supabase
-      .from('vision_images')
-      .update({
+    try {
+      await updateDoc(doc(db, 'vision_images', updatedImage.id), {
         src: updatedImage.src,
         alt: updatedImage.alt,
         category: updatedImage.category,
-      })
-      .eq('id', updatedImage.id);
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (error) {
+      notifyFirestoreFailure('update image', error);
+    }
   }, []);
 
   const handleDeleteImage = useCallback(async (id: string) => {
-    setImages(prev => prev.filter(img => img.id !== id));
+    setImages((prev) => prev.filter((image) => image.id !== id));
 
-    if (!isSupabaseConfigured || !supabase) return;
+    if (!isFirebaseConfigured || !db) return;
 
-    await supabase
-      .from('vision_images')
-      .delete()
-      .eq('id', id);
+    try {
+      await deleteDoc(doc(db, 'vision_images', id));
+    } catch (error) {
+      notifyFirestoreFailure('delete image', error);
+    }
   }, []);
 
   return (

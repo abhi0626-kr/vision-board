@@ -48,6 +48,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
 
     const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+      console.log('Auth changed:', firebaseUser);
+
       setUser(firebaseUser ? mapFirebaseUser(firebaseUser) : null);
       setLoading(false);
     });
@@ -83,12 +85,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const signInWithGoogle = async () => {
-    if (!auth || !googleProvider) return { error: new Error('Firebase not configured') };
+    if (!auth || !googleProvider)
+      return { error: new Error('Firebase not configured') };
 
     try {
-      await signInWithPopup(auth, googleProvider);
+      setLoading(true);
+
+      const result = await signInWithPopup(auth, googleProvider);
+
+      console.log('Google Success:');
+      console.log(result.user);
+
+      // Update local user state immediately instead of waiting for auth listener
+      setUser(mapFirebaseUser(result.user));
+
+      setLoading(false);
+
       return { error: null };
     } catch (error) {
+      console.error('Google Error:', error);
+      setLoading(false);
       return { error };
     }
   };

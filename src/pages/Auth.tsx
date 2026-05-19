@@ -75,6 +75,9 @@ const Auth = () => {
     if (error) {
       setError(error.message);
       setLoading(false);
+    } else {
+      setLoading(false);
+      navigate('/');
     }
   };
 

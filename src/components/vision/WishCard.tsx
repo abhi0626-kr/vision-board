@@ -29,19 +29,33 @@ export function WishCard({ wish, onToggle, onEdit }: WishCardProps) {
           isCompleted ? 'bg-gold/10 border-gold/30' : 'bg-card border-border/50 hover-glow'
         } ${detailsOpen ? 'p-5 pb-6' : 'p-5'}`}
       >
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onEdit(wish);
-          }}
-          className="absolute right-3 top-3 z-20 rounded-full bg-secondary/80 p-2 text-muted-foreground opacity-0 transition-all duration-300 hover:bg-secondary hover:text-foreground group-hover:opacity-100"
-        >
-          <Pencil className="h-3.5 w-3.5" />
-        </button>
+        <div className="absolute right-3 top-3 z-20 flex items-center gap-2">
+          {isCompleted && (
+            <Sparkles className="h-4 w-4 animate-pulse text-gold opacity-0 transition-all duration-300 group-hover:opacity-100" />
+          )}
 
-        {isCompleted && (
-          <Sparkles className="absolute right-12 top-3 h-5 w-5 animate-pulse text-gold" />
-        )}
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setDetailsOpen((current) => !current);
+            }}
+            className="rounded-full bg-secondary/80 p-2 text-muted-foreground opacity-0 transition-all duration-300 hover:bg-secondary hover:text-foreground group-hover:opacity-100"
+            aria-label={detailsOpen ? 'View less details' : 'View more details'}
+            title={detailsOpen ? 'View less details' : 'View more details'}
+          >
+            {detailsOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+          </button>
+
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onEdit(wish);
+            }}
+            className="rounded-full bg-secondary/80 p-2 text-muted-foreground opacity-0 transition-all duration-300 hover:bg-secondary hover:text-foreground group-hover:opacity-100"
+          >
+            <Pencil className="h-3.5 w-3.5" />
+          </button>
+        </div>
 
         <div className="flex items-start gap-4">
           <button
@@ -78,19 +92,7 @@ export function WishCard({ wish, onToggle, onEdit }: WishCardProps) {
               </div>
             )}
 
-            <div className="mt-4 flex items-center gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => setDetailsOpen((current) => !current)}
-                className="h-8 w-8 p-0"
-                aria-label={detailsOpen ? 'View less details' : 'View more details'}
-                title={detailsOpen ? 'View less details' : 'View more details'}
-              >
-                {detailsOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-              </Button>
-            </div>
+            {/* details toggle moved to top-right controls */}
 
             <div
               className={`grid overflow-hidden transition-all duration-300 ease-in-out ${

@@ -72,6 +72,7 @@ export function AddContentDialog({ onAddTheory, onAddWish, onAddImage, onReflect
   const [weaknesses, setWeaknesses] = useState('');
   const [reflectionLoading, setReflectionLoading] = useState(false);
   const [reflectionSaving, setReflectionSaving] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
   const reflectionStorageKey = `${REFLECTION_KEY_PREFIX}-${user?.id || 'guest'}`;
   const strengthCount = countReflectionItems(strengths);
@@ -160,6 +161,8 @@ export function AddContentDialog({ onAddTheory, onAddWish, onAddImage, onReflect
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submitting) return;
+    setSubmitting(true);
     
     if (formType === 'theory') {
       if (!theoryTitle.trim() || !theoryContent.trim()) return;
@@ -172,6 +175,7 @@ export function AddContentDialog({ onAddTheory, onAddWish, onAddImage, onReflect
       setTheoryTitle('');
       setTheoryContent('');
       setTheoryAuthor('');
+      setSubmitting(false);
     } else if (formType === 'wish') {
       if (!wishTitle.trim()) return;
       onAddWish({
@@ -183,6 +187,7 @@ export function AddContentDialog({ onAddTheory, onAddWish, onAddImage, onReflect
       });
       setWishTitle('');
       setWishDescription('');
+      setSubmitting(false);
     } else if (formType === 'image') {
       if (!imageUrl.trim() || !imageAlt.trim()) return;
       onAddImage({
@@ -193,6 +198,7 @@ export function AddContentDialog({ onAddTheory, onAddWish, onAddImage, onReflect
       setImageUrl('');
       setImageAlt('');
       setImagePreview('');
+      setSubmitting(false);
     } else {
       if (!user) return;
 
@@ -235,11 +241,13 @@ export function AddContentDialog({ onAddTheory, onAddWish, onAddImage, onReflect
           onReflectionSaved?.(longNotes);
         } finally {
           setReflectionSaving(false);
+          setSubmitting(false);
         }
       }
     }
     
     setOpen(false);
+    setSubmitting(false);
   };
 
   return (
@@ -521,7 +529,7 @@ export function AddContentDialog({ onAddTheory, onAddWish, onAddImage, onReflect
           <Button 
             type="submit" 
             className="w-full bg-gold hover:bg-gold/90 text-primary-foreground font-sans"
-            disabled={reflectionLoading || reflectionSaving}
+            disabled={reflectionLoading || reflectionSaving || submitting}
           >
             {formType === 'reflection'
               ? reflectionSaving

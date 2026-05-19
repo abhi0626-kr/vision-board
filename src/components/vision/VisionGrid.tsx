@@ -47,8 +47,16 @@ export function VisionGrid({
       ? items 
       : items.filter(item => item.data.category === categoryFilter);
 
-    // Stable sort by type, then id
-    return filtered.sort((a, b) => {
+    // Remove duplicate ids (keep first occurrence) then stable sort by type, then id
+    const seen = new Set<string>();
+    const unique = filtered.filter((it) => {
+      if (!it.data.id) return true;
+      if (seen.has(it.data.id)) return false;
+      seen.add(it.data.id);
+      return true;
+    });
+
+    return unique.sort((a, b) => {
       const typeOrder = { theory: 0, wish: 1, image: 2, video: 3 };
       if (typeOrder[a.type] !== typeOrder[b.type]) {
         return typeOrder[a.type] - typeOrder[b.type];
@@ -79,7 +87,13 @@ export function VisionGrid({
           style={{ animationDelay: `${index * 50}ms` }}
         >
           {item.type === 'theory' && <TheoryCard theory={item.data} onEdit={onEditTheory} />}
-          {item.type === 'wish' && <WishCard wish={item.data} onToggle={onToggleWish} onEdit={onEditWish} />}
+          {item.type === 'wish' && (
+            <WishCard
+              wish={item.data}
+              onToggle={onToggleWish}
+              onEdit={onEditWish}
+            />
+          )}
           {item.type === 'image' && <ImageCard image={item.data} onEdit={onEditImage} />}
           {item.type === 'video' && <VideoCard video={item.data} />}
         </div>

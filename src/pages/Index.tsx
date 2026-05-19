@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, query, updateDoc, where } from 'firebase/firestore';
+import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, query, setDoc, updateDoc, where } from 'firebase/firestore';
 import { Category, Theory, Wish, VisionImage, VisionVideo } from '@/types/vision';
 import { Header } from '@/components/vision/Header';
 import { CategoryFilter } from '@/components/vision/CategoryFilter';
@@ -72,6 +72,8 @@ const Index = () => {
   const [videos, setVideos] = useState<VisionVideo[]>([]);
   const [theories, setTheories] = useState<Theory[]>([]);
   const [wishes, setWishes] = useState<Wish[]>([]);
+  const updatingWishIdsRef = useRef(new Set<string>());
+  const recentlyUpdatedWishesRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const [categoryFilter, setCategoryFilter] = useState<Category | 'all'>('all');
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -234,8 +236,22 @@ const Index = () => {
       wishesQuery,
       (snapshot) => {
         if (!active) return;
-
-        setWishes(sortByCreatedAtDesc(snapshot.docs.map((entry) => mapWishRow(entry.data(), entry.id))));
+        // eslint-disable-next-line no-console
+        console.log('Wishes listener fired, snapshot docs:', snapshot.docs.length);
+        const updatedWishes = sortByCreatedAtDesc(snapshot.docs.map((entry) => {
+          const mapped = mapWishRow(entry.data(), entry.id);
+          // Skip listener update for recently-updated wishes to prevent overwriting optimistic updates
+          if (recentlyUpdatedWishesRef.current.has(mapped.id)) {
+            // eslint-disable-next-line no-console
+            console.log('Skipping listener update for recently-updated wish:', mapped.id);
+            // Return current state for this wish instead of listener data
+            return wishes.find(w => w.id === mapped.id) || mapped;
+          }
+          // eslint-disable-next-line no-console
+          console.log('Wish from listener:', { id: mapped.id, completed: mapped.completed });
+          return mapped;
+        }));
+        setWishes(updatedWishes);
       },
       (error) => {
         if (active) {
@@ -325,15 +341,19 @@ const Index = () => {
         achievedAt: newWish.completed ? createdAt : null,
       });
 
-      setWishes((prev) => [
-        {
-          ...newWish,
-          id: ref.id,
-          createdAt,
-          achievedAt: newWish.completed ? createdAt : null,
-        },
-        ...prev,
-      ]);
+      // Insert the new wish into state, ensuring we don't create duplicates
+      setWishes((prev) => {
+        const filtered = prev.filter((w) => w.id !== ref.id);
+        return [
+          {
+            ...newWish,
+            id: ref.id,
+            createdAt,
+            achievedAt: newWish.completed ? createdAt : null,
+          },
+          ...filtered,
+        ];
+      });
     } catch (error) {
       console.error('Failed to add wish:', error);
       setWishes((prev) => [
@@ -379,27 +399,69 @@ const Index = () => {
     let nextAchievedAt: string | null = null;
     const now = new Date().toISOString();
 
-    setWishes((prev) => prev.map((wish) => {
-      if (wish.id !== id) return wish;
-      nextCompleted = !wish.completed;
-      nextProgress = wish.completed ? wish.progress : 100;
-      nextAchievedAt = nextCompleted ? (wish.achievedAt ?? now) : null;
-      return { ...wish, completed: nextCompleted, progress: nextProgress, achievedAt: nextAchievedAt ?? undefined };
-    }));
+    // Prevent concurrent toggles on the same wish
+    if (updatingWishIdsRef.current.has(id)) {
+      // eslint-disable-next-line no-console
+      console.log('Toggle ignored (in-flight):', id);
+      return;
+    }
+    // eslint-disable-next-line no-console
+    console.log('Toggle starting for:', id);
+    updatingWishIdsRef.current.add(id);
+    // eslint-disable-next-line no-console
+    console.log('Added to updating set:', id);
+
+    setWishes((prev) => {
+      // eslint-disable-next-line no-console
+      console.log('setWishes called, current wishes count:', prev.length);
+      return prev.map((wish) => {
+        if (wish.id !== id) return wish;
+        // eslint-disable-next-line no-console
+        console.log('Found wish to toggle, current completed:', wish.completed);
+        nextCompleted = !wish.completed;
+        nextProgress = wish.completed ? wish.progress : 100;
+        nextAchievedAt = nextCompleted ? (wish.achievedAt ?? now) : null;
+        // eslint-disable-next-line no-console
+        console.log('Updated wish state:', { nextCompleted, nextProgress, nextAchievedAt });
+        return { ...wish, completed: nextCompleted, progress: nextProgress, achievedAt: nextAchievedAt ?? undefined };
+      });
+    });
+
+    // Mark this wish as recently updated so listener skips it temporarily
+    const oldTimeout = recentlyUpdatedWishesRef.current.get(id);
+    if (oldTimeout) clearTimeout(oldTimeout);
+    recentlyUpdatedWishesRef.current.set(id, setTimeout(() => {
+      recentlyUpdatedWishesRef.current.delete(id);
+      // eslint-disable-next-line no-console
+      console.log('Cleared recently-updated flag for wish:', id);
+    }, 2000));
+    // eslint-disable-next-line no-console
+    console.log('Marked wish as recently-updated:', id);
 
     if (!isFirebaseConfigured || !db) return;
 
     try {
-      await updateDoc(doc(db, 'vision_wishes', id), {
-        completed: nextCompleted,
-        progress: nextProgress ?? null,
-        achievedAt: nextAchievedAt,
-        updatedAt: now,
-      });
+      await setDoc(
+        doc(db, 'vision_wishes', id),
+        {
+          completed: nextCompleted,
+          progress: nextProgress ?? null,
+          achievedAt: nextAchievedAt,
+          updatedAt: now,
+        },
+        { merge: true }
+      );
+      // eslint-disable-next-line no-console
+      console.log('setDoc completed for wish:', id, 'completed:', nextCompleted);
     } catch (error) {
       notifyFirestoreFailure('update wish', error);
     }
-  }, []);
+    finally {
+      updatingWishIdsRef.current.delete(id);
+      // eslint-disable-next-line no-console
+      console.log('Removed from updating set:', id);
+    }
+  }, [isFirebaseConfigured, db, notifyFirestoreFailure]);
 
   const handleSaveTheory = useCallback(async (updatedTheory: Theory) => {
     setTheories((prev) => prev.map((theory) => (theory.id === updatedTheory.id ? updatedTheory : theory)));
@@ -407,13 +469,17 @@ const Index = () => {
     if (!isFirebaseConfigured || !db) return;
 
     try {
-      await updateDoc(doc(db, 'vision_theories', updatedTheory.id), {
-        title: updatedTheory.title,
-        content: updatedTheory.content,
-        author: updatedTheory.author ?? null,
-        category: updatedTheory.category,
-        updatedAt: new Date().toISOString(),
-      });
+      await setDoc(
+        doc(db, 'vision_theories', updatedTheory.id),
+        {
+          title: updatedTheory.title,
+          content: updatedTheory.content,
+          author: updatedTheory.author ?? null,
+          category: updatedTheory.category,
+          updatedAt: new Date().toISOString(),
+        },
+        { merge: true }
+      );
     } catch (error) {
       notifyFirestoreFailure('update theory', error);
     }
@@ -448,15 +514,19 @@ const Index = () => {
     if (!isFirebaseConfigured || !db) return;
 
     try {
-      await updateDoc(doc(db, 'vision_wishes', updatedWish.id), {
-        title: updatedWish.title,
-        description: updatedWish.description ?? null,
-        category: updatedWish.category,
-        completed: updatedWish.completed,
-        progress: updatedWish.progress ?? null,
-        achievedAt: nextAchievedAt,
-        updatedAt: now,
-      });
+      await setDoc(
+        doc(db, 'vision_wishes', updatedWish.id),
+        {
+          title: updatedWish.title,
+          description: updatedWish.description ?? null,
+          category: updatedWish.category,
+          completed: updatedWish.completed,
+          progress: updatedWish.progress ?? null,
+          achievedAt: nextAchievedAt,
+          updatedAt: now,
+        },
+        { merge: true }
+      );
     } catch (error) {
       notifyFirestoreFailure('update wish', error);
     }
@@ -480,12 +550,16 @@ const Index = () => {
     if (!isFirebaseConfigured || !db) return;
 
     try {
-      await updateDoc(doc(db, 'vision_images', updatedImage.id), {
-        src: updatedImage.src,
-        alt: updatedImage.alt,
-        category: updatedImage.category,
-        updatedAt: new Date().toISOString(),
-      });
+      await setDoc(
+        doc(db, 'vision_images', updatedImage.id),
+        {
+          src: updatedImage.src,
+          alt: updatedImage.alt,
+          category: updatedImage.category,
+          updatedAt: new Date().toISOString(),
+        },
+        { merge: true }
+      );
     } catch (error) {
       notifyFirestoreFailure('update image', error);
     }

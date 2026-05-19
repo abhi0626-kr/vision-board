@@ -64,7 +64,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       await createUserWithEmailAndPassword(auth, email, password);
       return { error: null };
     } catch (error) {
-      return { error };
+      return { error: mapFirebaseAuthError(error) };
     }
   };
 
@@ -75,7 +75,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       await signInWithEmailAndPassword(auth, email, password);
       return { error: null };
     } catch (error) {
-      return { error };
+      return { error: mapFirebaseAuthError(error) };
     }
   };
 
@@ -105,9 +105,31 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch (error) {
       console.error('Google Error:', error);
       setLoading(false);
-      return { error };
+      return { error: mapFirebaseAuthError(error) };
     }
   };
+
+  function mapFirebaseAuthError(error: unknown) {
+    const anyErr = error as any;
+    const code = anyErr && anyErr.code ? String(anyErr.code) : undefined;
+
+    switch (code) {
+      case 'auth/wrong-password':
+      case 'auth/user-not-found':
+      case 'auth/invalid-credential':
+        return new Error('Invalid email or password.');
+      case 'auth/invalid-email':
+        return new Error('Invalid email address.');
+      case 'auth/user-disabled':
+        return new Error('This account has been disabled.');
+      case 'auth/email-already-in-use':
+        return new Error('Email is already in use.');
+      case 'auth/popup-closed-by-user':
+        return new Error('Sign-in popup closed before completing sign-in.');
+      default:
+        return error instanceof Error ? error : new Error('Authentication failed.');
+    }
+  }
 
   return (
     <AuthContext.Provider value={{ user, session: null, loading, signUp, signIn, signInWithGoogle, signOut }}>

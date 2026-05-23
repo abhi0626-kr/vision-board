@@ -42,8 +42,12 @@ if (auth) {
   void setPersistence(auth, browserLocalPersistence).catch(() => undefined);
 }
 
-// Connect to local emulators when requested via environment variable
+// Connect to local emulators when requested via environment variable.
+// Storage also auto-falls back on localhost so uploads keep working in local dev
+// even if the Vite process was started before .env.local was updated.
+const isLocalhost = typeof window !== 'undefined' && ['localhost', '127.0.0.1'].includes(window.location.hostname);
 const useEmulator = import.meta.env.VITE_USE_FIREBASE_EMULATOR === 'true';
+const useStorageEmulator = import.meta.env.VITE_USE_FIREBASE_STORAGE_EMULATOR === 'true' || useEmulator || isLocalhost;
 const emulatorHost = import.meta.env.VITE_FIREBASE_EMULATOR_HOST || '127.0.0.1';
 const emulatorPorts = {
   auth: Number(import.meta.env.VITE_FIREBASE_AUTH_EMULATOR_PORT || 9099),
@@ -51,19 +55,19 @@ const emulatorPorts = {
   storage: Number(import.meta.env.VITE_FIREBASE_STORAGE_EMULATOR_PORT || 9199),
 };
 
-if (useEmulator && typeof window !== 'undefined') {
+if ((useEmulator || useStorageEmulator) && typeof window !== 'undefined') {
   try {
-    if (auth) {
+    if (auth && useEmulator) {
       connectAuthEmulator(auth, `http://${emulatorHost}:${emulatorPorts.auth}`, { disableWarnings: true });
       console.log('[Firebase] Connected Auth emulator at', `${emulatorHost}:${emulatorPorts.auth}`);
     }
 
-    if (db) {
+    if (db && useEmulator) {
       connectFirestoreEmulator(db, emulatorHost, emulatorPorts.firestore);
       console.log('[Firebase] Connected Firestore emulator at', `${emulatorHost}:${emulatorPorts.firestore}`);
     }
 
-    if (storage) {
+    if (storage && useStorageEmulator) {
       connectStorageEmulator(storage, emulatorHost, emulatorPorts.storage);
       console.log('[Firebase] Connected Storage emulator at', `${emulatorHost}:${emulatorPorts.storage}`);
     }

@@ -24,3 +24,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+.vercel
+.env*
+vision-board-28cc5-firebase-adminsdk-fbsvc-1551500a08.json

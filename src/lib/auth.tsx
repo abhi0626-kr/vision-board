@@ -126,6 +126,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return new Error('Email is already in use.');
       case 'auth/popup-closed-by-user':
         return new Error('Sign-in popup closed before completing sign-in.');
+      case 'auth/popup-blocked':
+        return new Error('Popup was blocked by the browser. Allow popups for this site and try again.');
+      case 'auth/unauthorized-domain':
+        return new Error(`This domain is not authorized for Google sign-in (${window.location.hostname}). Add it in Firebase Console -> Authentication -> Settings -> Authorized domains.`);
       default:
         return error instanceof Error ? error : new Error('Authentication failed.');
     }

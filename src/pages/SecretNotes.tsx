@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/lib/auth';
 import { db, firebaseConfig, isFirebaseConfigured } from '@/lib/firebase';
 import { encryptString, decryptString, isEncryptedContent } from '@/lib/crypto';
-import { getStorage, ref, uploadBytes, getBlob, deleteObject } from 'firebase/storage';
+import { getStorage, ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogFooter, DialogTitle, DialogDescription, DialogClose } from '@/components/ui/dialog';
@@ -29,6 +29,7 @@ type StorageType = typeof IMAGE_STORAGE_PATH | typeof VIDEO_STORAGE_PATH;
 
 type StoredMediaRef = {
   path: string;
+  url?: string;
 };
 
 type DisplayMedia = StoredMediaRef & {
@@ -96,7 +97,7 @@ function isVaultParagraph(value: unknown): value is VaultParagraph {
 function isStoredMediaRef(value: unknown): value is StoredMediaRef {
   if (!value || typeof value !== 'object') return false;
 
-  const candidate = value as { path?: unknown };
+  const candidate = value as { path?: unknown; url?: unknown };
   return typeof candidate.path === 'string' && candidate.path.length > 0;
 }
 
@@ -194,6 +195,13 @@ function revokePreviewUrl(url: string | null) {
   }
 }
 
+function normalizeMediaRef(value: StoredMediaRef): StoredMediaRef {
+  return {
+    path: value.path,
+    url: value.url,
+  };
+}
+
 const UNKNOWN_HEALTH: BucketHealth = {
   ok: false,
   message: 'Not checked yet',
@@ -284,17 +292,13 @@ const SecretNotes = () => {
   };
 
   const createSignedUrl = async (mediaRef: StoredMediaRef): Promise<string> => {
-    if (!firebaseConfig.storageBucket) {
-      throw new Error('Firebase Storage bucket not configured');
-    }
+    if (mediaRef.url) return mediaRef.url;
 
     const storage = getStorage();
     const fileRef = ref(storage, mediaRef.path);
     
     try {
-      // Build preview URL from authenticated SDK response so private objects render reliably.
-      const blob = await getBlob(fileRef);
-      const url = URL.createObjectURL(blob);
+      const url = await getDownloadURL(fileRef);
       
       console.log('[SecretNotes] Created storage URL for:', mediaRef.path);
       return url;
@@ -786,8 +790,9 @@ const SecretNotes = () => {
           const fileRef = ref(storage, path);
           console.log('[SecretNotes] Uploading file:', path);
           await uploadBytes(fileRef, file);
+          const url = await getDownloadURL(fileRef);
           console.log('[SecretNotes] File uploaded:', path);
-          return { path } as StoredMediaRef;
+          return { path, url } as StoredMediaRef;
         })
       );
 
@@ -895,7 +900,8 @@ const SecretNotes = () => {
 
       const fileRef = ref(storage, path);
       await uploadBytes(fileRef, blob);
-      uploadedRefs.push({ path });
+      const url = await getDownloadURL(fileRef);
+      uploadedRefs.push({ path, url });
     }
 
     return uploadedRefs;
@@ -920,8 +926,8 @@ const SecretNotes = () => {
       const migratedPayload: VaultPayload = {
         note: payload.note,
         paragraphs: payload.paragraphs,
-        images: [...payload.images, ...migratedImages],
-        videos: [...payload.videos, ...migratedVideos],
+        images: [...payload.images, ...migratedImages].map(normalizeMediaRef),
+        videos: [...payload.videos, ...migratedVideos].map(normalizeMediaRef),
       };
 
       const serialized = serializeVaultPayload(migratedPayload);

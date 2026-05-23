@@ -26,9 +26,9 @@ import { db, isFirebaseConfigured } from '@/lib/firebase';
 import { useToast } from '@/hooks/use-toast';
 
 interface AddContentDialogProps {
-  onAddTheory: (theory: Omit<Theory, 'id'>) => void;
-  onAddWish: (wish: Omit<Wish, 'id'>) => void;
-  onAddImage: (image: Omit<VisionImage, 'id'>) => void;
+  onAddTheory: (theory: Omit<Theory, 'id'>) => void | Promise<void>;
+  onAddWish: (wish: Omit<Wish, 'id'>) => void | Promise<void>;
+  onAddImage: (image: Omit<VisionImage, 'id'>) => void | Promise<void>;
   onReflectionSaved?: (longNotes: string) => void;
 }
 
@@ -163,91 +163,90 @@ export function AddContentDialog({ onAddTheory, onAddWish, onAddImage, onReflect
     e.preventDefault();
     if (submitting) return;
     setSubmitting(true);
-    
-    if (formType === 'theory') {
-      if (!theoryTitle.trim() || !theoryContent.trim()) return;
-      onAddTheory({
-        title: theoryTitle.trim(),
-        content: theoryContent.trim(),
-        author: theoryAuthor.trim() || undefined,
-        category,
-      });
-      setTheoryTitle('');
-      setTheoryContent('');
-      setTheoryAuthor('');
-      setSubmitting(false);
-    } else if (formType === 'wish') {
-      if (!wishTitle.trim()) return;
-      onAddWish({
-        title: wishTitle.trim(),
-        description: wishDescription.trim() || undefined,
-        category,
-        completed: false,
-        progress: 0,
-      });
-      setWishTitle('');
-      setWishDescription('');
-      setSubmitting(false);
-    } else if (formType === 'image') {
-      if (!imageUrl.trim() || !imageAlt.trim()) return;
-      onAddImage({
-        src: imageUrl.trim(),
-        alt: imageAlt.trim(),
-        category,
-      });
-      setImageUrl('');
-      setImageAlt('');
-      setImagePreview('');
-      setSubmitting(false);
-    } else {
-      if (!user) return;
 
-      const payload = {
-        longNotes,
-        strengths,
-        weaknesses,
-      };
-
-      localStorage.setItem(reflectionStorageKey, JSON.stringify(payload));
-
-      if (!isFirebaseConfigured || !db) {
-        toast({
-          title: 'Saved locally',
-          description: 'Firebase not configured. Reflection saved on this device.',
-        });
-        onReflectionSaved?.(longNotes);
+    try {
+      if (formType === 'theory') {
+        if (!theoryTitle.trim() || !theoryContent.trim()) return;
+        await Promise.resolve(onAddTheory({
+          title: theoryTitle.trim(),
+          content: theoryContent.trim(),
+          author: theoryAuthor.trim() || undefined,
+          category,
+        }));
+        setTheoryTitle('');
+        setTheoryContent('');
+        setTheoryAuthor('');
+      } else if (formType === 'wish') {
+        if (!wishTitle.trim()) return;
+        await Promise.resolve(onAddWish({
+          title: wishTitle.trim(),
+          description: wishDescription.trim() || undefined,
+          category,
+          completed: false,
+          progress: 0,
+        }));
+        setWishTitle('');
+        setWishDescription('');
+      } else if (formType === 'image') {
+        if (!imageUrl.trim() || !imageAlt.trim()) return;
+        await Promise.resolve(onAddImage({
+          src: imageUrl.trim(),
+          alt: imageAlt.trim(),
+          category,
+        }));
+        setImageUrl('');
+        setImageAlt('');
+        setImagePreview('');
       } else {
-        setReflectionSaving(true);
-        try {
-          await setDoc(doc(db, 'user_reflections', user.id), {
-            userId: user.id,
-            longNotes,
-            strengths,
-            weaknesses,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-          }, { merge: true });
+        if (!user) return;
 
-          toast({
-            title: 'Reflection synced',
-            description: 'Saved to Firebase and synced across your devices.',
-          });
-          onReflectionSaved?.(longNotes);
-        } catch {
+        const payload = {
+          longNotes,
+          strengths,
+          weaknesses,
+        };
+
+        localStorage.setItem(reflectionStorageKey, JSON.stringify(payload));
+
+        if (!isFirebaseConfigured || !db) {
           toast({
             title: 'Saved locally',
-            description: 'Cloud save failed. Your reflection is safe on this device.',
+            description: 'Firebase not configured. Reflection saved on this device.',
           });
           onReflectionSaved?.(longNotes);
-        } finally {
-          setReflectionSaving(false);
-          setSubmitting(false);
+        } else {
+          setReflectionSaving(true);
+          try {
+            await setDoc(doc(db, 'user_reflections', user.id), {
+              userId: user.id,
+              longNotes,
+              strengths,
+              weaknesses,
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            }, { merge: true });
+
+            toast({
+              title: 'Reflection synced',
+              description: 'Saved to Firebase and synced across your devices.',
+            });
+            onReflectionSaved?.(longNotes);
+          } catch {
+            toast({
+              title: 'Saved locally',
+              description: 'Cloud save failed. Your reflection is safe on this device.',
+            });
+            onReflectionSaved?.(longNotes);
+          } finally {
+            setReflectionSaving(false);
+          }
         }
       }
+
+      setOpen(false);
+    } finally {
+      setSubmitting(false);
     }
-    
-    setOpen(false);
-    setSubmitting(false);
   };
 
   return (

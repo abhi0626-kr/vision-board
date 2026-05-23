@@ -1,0 +1,19 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Allow authenticated users to upload photos to their own folder
+    match /secret-note-images/{userId}/{allPaths=**} {
+      allow read, write: if request.auth.uid == userId;
+    }
+
+    // Allow authenticated users to upload videos to their own folder
+    match /secret-note-videos/{userId}/{allPaths=**} {
+      allow read, write: if request.auth.uid == userId;
+    }
+
+    // Deny all other access
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

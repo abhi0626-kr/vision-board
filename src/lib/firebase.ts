@@ -1,6 +1,7 @@
 import { initializeApp, getApp, getApps } from 'firebase/app';
-import { browserLocalPersistence, getAuth, GoogleAuthProvider, setPersistence } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
+import { browserLocalPersistence, getAuth, GoogleAuthProvider, setPersistence, connectAuthEmulator } from 'firebase/auth';
+import { getFirestore, connectFirestoreEmulator } from 'firebase/firestore';
+import { getStorage, connectStorageEmulator } from 'firebase/storage';
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY as string | undefined,
@@ -29,6 +30,7 @@ export const app = isFirebaseConfigured
 
 export const auth = app ? getAuth(app) : null;
 export const db = app ? getFirestore(app) : null;
+export const storage = app ? getStorage(app) : null;
 
 export const googleProvider = app ? new GoogleAuthProvider() : null;
 
@@ -40,4 +42,44 @@ if (auth) {
   void setPersistence(auth, browserLocalPersistence).catch(() => undefined);
 }
 
+// Connect to local emulators when requested via environment variable
+const useEmulator = import.meta.env.VITE_USE_FIREBASE_EMULATOR === 'true';
+const emulatorHost = import.meta.env.VITE_FIREBASE_EMULATOR_HOST || '127.0.0.1';
+const emulatorPorts = {
+  auth: Number(import.meta.env.VITE_FIREBASE_AUTH_EMULATOR_PORT || 9099),
+  firestore: Number(import.meta.env.VITE_FIREBASE_FIRESTORE_EMULATOR_PORT || 8080),
+  storage: Number(import.meta.env.VITE_FIREBASE_STORAGE_EMULATOR_PORT || 9199),
+};
+
+if (useEmulator && typeof window !== 'undefined') {
+  try {
+    if (auth) {
+      connectAuthEmulator(auth, `http://${emulatorHost}:${emulatorPorts.auth}`, { disableWarnings: true });
+      console.log('[Firebase] Connected Auth emulator at', `${emulatorHost}:${emulatorPorts.auth}`);
+    }
+
+    if (db) {
+      connectFirestoreEmulator(db, emulatorHost, emulatorPorts.firestore);
+      console.log('[Firebase] Connected Firestore emulator at', `${emulatorHost}:${emulatorPorts.firestore}`);
+    }
+
+    if (storage) {
+      connectStorageEmulator(storage, emulatorHost, emulatorPorts.storage);
+      console.log('[Firebase] Connected Storage emulator at', `${emulatorHost}:${emulatorPorts.storage}`);
+    }
+  } catch (e) {
+    console.warn('[Firebase] Could not connect to emulators', e);
+  }
+}
+
 export { firebaseConfig };
+
+// Debug logging for Firebase configuration
+if (typeof window !== 'undefined') {
+  console.log('[Firebase] Configuration status:', {
+    configured: isFirebaseConfigured,
+    hasApp: !!app,
+    hasDb: !!db,
+    hasAuth: !!auth,
+  });
+}

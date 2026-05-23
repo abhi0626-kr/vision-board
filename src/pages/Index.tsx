@@ -295,7 +295,7 @@ const Index = () => {
     }
 
     try {
-      const ref = await addDoc(collection(db, 'vision_theories'), {
+      await addDoc(collection(db, 'vision_theories'), {
         userId: user.id,
         title: newTheory.title,
         content: newTheory.content,
@@ -304,13 +304,10 @@ const Index = () => {
         createdAt,
         updatedAt: createdAt,
       });
-
-      setTheories((prev) => [{ ...newTheory, id: ref.id }, ...prev]);
     } catch (error) {
-      console.error('Failed to add theory:', error);
-      setTheories((prev) => [{ ...newTheory, id: createFallbackId() }, ...prev]);
+      notifyFirestoreFailure('add theory', error);
     }
-  }, [user]);
+  }, [user, notifyFirestoreFailure]);
 
   const handleAddWish = useCallback(async (newWish: Omit<Wish, 'id'>) => {
     const createdAt = new Date().toISOString();
@@ -329,7 +326,7 @@ const Index = () => {
     }
 
     try {
-      const ref = await addDoc(collection(db, 'vision_wishes'), {
+      await addDoc(collection(db, 'vision_wishes'), {
         userId: user.id,
         title: newWish.title,
         description: newWish.description ?? null,
@@ -340,33 +337,10 @@ const Index = () => {
         updatedAt: createdAt,
         achievedAt: newWish.completed ? createdAt : null,
       });
-
-      // Insert the new wish into state, ensuring we don't create duplicates
-      setWishes((prev) => {
-        const filtered = prev.filter((w) => w.id !== ref.id);
-        return [
-          {
-            ...newWish,
-            id: ref.id,
-            createdAt,
-            achievedAt: newWish.completed ? createdAt : null,
-          },
-          ...filtered,
-        ];
-      });
     } catch (error) {
-      console.error('Failed to add wish:', error);
-      setWishes((prev) => [
-        {
-          ...newWish,
-          id: createFallbackId(),
-          createdAt,
-          achievedAt: newWish.completed ? createdAt : null,
-        },
-        ...prev,
-      ]);
+      notifyFirestoreFailure('add wish', error);
     }
-  }, [user]);
+  }, [user, notifyFirestoreFailure]);
 
   const handleAddImage = useCallback(async (newImage: Omit<VisionImage, 'id'>) => {
     const createdAt = new Date().toISOString();
@@ -377,7 +351,7 @@ const Index = () => {
     }
 
     try {
-      const ref = await addDoc(collection(db, 'vision_images'), {
+      await addDoc(collection(db, 'vision_images'), {
         userId: user.id,
         src: newImage.src,
         alt: newImage.alt,
@@ -385,13 +359,10 @@ const Index = () => {
         createdAt,
         updatedAt: createdAt,
       });
-
-      setImages((prev) => [{ ...newImage, id: ref.id }, ...prev]);
     } catch (error) {
-      console.error('Failed to add image:', error);
-      setImages((prev) => [{ ...newImage, id: createFallbackId() }, ...prev]);
+      notifyFirestoreFailure('add image', error);
     }
-  }, [user]);
+  }, [user, notifyFirestoreFailure]);
 
   const handleToggleWish = useCallback(async (id: string) => {
     let nextCompleted = false;

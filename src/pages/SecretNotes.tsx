@@ -1,13 +1,17 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/lib/auth';
-import { supabase } from '@/lib/supabaseClient';
+import { db, firebaseConfig, isFirebaseConfigured } from '@/lib/firebase';
+import { encryptString, decryptString, isEncryptedContent } from '@/lib/crypto';
+import { getStorage, ref, uploadBytes, getBlob, deleteObject } from 'firebase/storage';
+import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { Button } from '@/components/ui/button';
+import { Dialog, DialogContent, DialogHeader, DialogFooter, DialogTitle, DialogDescription, DialogClose } from '@/components/ui/dialog';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { ThemeToggle } from '@/components/vision/ThemeToggle';
-import { ArrowLeft, CheckCircle2, ChevronLeft, ChevronRight, ImagePlus, Lock, Loader2, RotateCcw, Save, ShieldCheck, Trash2, Video, X, XCircle } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, ChevronLeft, ChevronRight, Download, ImagePlus, Lock, Loader2, RotateCcw, Save, ShieldCheck, Trash2, Video, X, XCircle } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 
 const SHARED_PASSCODE = '0626';
@@ -16,24 +20,14 @@ const LOCKOUT_MS = 5 * 60 * 1000;
 const INACTIVITY_MS = 10 * 60 * 1000;
 const LOCKOUT_STORAGE_KEY = 'secret_notes_lockout_until';
 const LOCAL_NOTE_PREFIX = 'secret_notes_local_';
-const IMAGE_BUCKET = 'secret-note-images';
-const VIDEO_BUCKET = 'secret-note-videos';
+const IMAGE_STORAGE_PATH = 'secret-note-images';
+const VIDEO_STORAGE_PATH = 'secret-note-videos';
 const IMAGE_UPLOAD_BATCH_SIZE = 8;
 const VIDEO_UPLOAD_BATCH_SIZE = 3;
-const SUPABASE_PROJECT_HOST = (() => {
-  const url = import.meta.env.VITE_SUPABASE_URL as string | undefined;
-  if (!url) return 'unknown-project';
-  try {
-    return new URL(url).host;
-  } catch {
-    return 'unknown-project';
-  }
-})();
 
-type BucketId = typeof IMAGE_BUCKET | typeof VIDEO_BUCKET;
+type StorageType = typeof IMAGE_STORAGE_PATH | typeof VIDEO_STORAGE_PATH;
 
 type StoredMediaRef = {
-  bucket: BucketId;
   path: string;
 };
 
@@ -99,11 +93,11 @@ function isVaultParagraph(value: unknown): value is VaultParagraph {
   );
 }
 
-function isStoredMediaRef(value: unknown, bucket: BucketId): value is StoredMediaRef {
+function isStoredMediaRef(value: unknown): value is StoredMediaRef {
   if (!value || typeof value !== 'object') return false;
 
-  const candidate = value as { bucket?: unknown; path?: unknown };
-  return candidate.bucket === bucket && typeof candidate.path === 'string' && candidate.path.length > 0;
+  const candidate = value as { path?: unknown };
+  return typeof candidate.path === 'string' && candidate.path.length > 0;
 }
 
 function parseVaultPayload(raw: string | null): ParsedVaultPayload {
@@ -118,8 +112,8 @@ function parseVaultPayload(raw: string | null): ParsedVaultPayload {
   try {
     const parsed = JSON.parse(raw);
     if (typeof parsed.note === 'string' && Array.isArray(parsed.images) && Array.isArray(parsed.videos)) {
-      const storedImages = parsed.images.filter((value: unknown) => isStoredMediaRef(value, IMAGE_BUCKET));
-      const storedVideos = parsed.videos.filter((value: unknown) => isStoredMediaRef(value, VIDEO_BUCKET));
+      const storedImages = parsed.images.filter((value: unknown) => isStoredMediaRef(value));
+      const storedVideos = parsed.videos.filter((value: unknown) => isStoredMediaRef(value));
       const parsedParagraphs = Array.isArray(parsed.paragraphs)
         ? parsed.paragraphs.filter((value: unknown) => isVaultParagraph(value))
         : [];
@@ -194,6 +188,12 @@ function getErrorMessage(error: unknown): string {
   return 'Unknown error';
 }
 
+function revokePreviewUrl(url: string | null) {
+  if (url && url.startsWith('blob:')) {
+    URL.revokeObjectURL(url);
+  }
+}
+
 const UNKNOWN_HEALTH: BucketHealth = {
   ok: false,
   message: 'Not checked yet',
@@ -228,6 +228,14 @@ const SecretNotes = () => {
   const lastActivityRef = useRef<number>(Date.now());
   const viewerTouchStartRef = useRef<{ x: number; y: number } | null>(null);
   const localNoteKey = `${LOCAL_NOTE_PREFIX}${user?.id || 'guest'}`;
+  const passphraseStorageKey = `secret_notes_passphrase_${user?.id || 'guest'}`;
+  const [passphraseSet, setPassphraseSet] = useState<boolean>(false);
+  const [passphraseModalOpen, setPassphraseModalOpen] = useState(false);
+  const [passphraseMode, setPassphraseMode] = useState<'set' | 'enter'>('set');
+  const [passphraseInput, setPassphraseInput] = useState('');
+  const [passphraseConfirm, setPassphraseConfirm] = useState('');
+  const [passphraseError, setPassphraseError] = useState<string | null>(null);
+  const [pendingEncryptedBlob, setPendingEncryptedBlob] = useState<any | null>(null);
 
   const currentViewerItems = viewerType === 'image' ? imagePreviewItems : videoPreviewItems;
   const currentViewerItem = currentViewerItems[viewerIndex] || null;
@@ -275,18 +283,25 @@ const SecretNotes = () => {
     }
   };
 
-  const buildStoragePath = (fileName: string): string => {
-    const normalizedName = fileName.toLowerCase().replace(/[^a-z0-9.\-_]/g, '-');
-    const randomPart = crypto.randomUUID();
-    return `${user?.id}/${Date.now()}-${randomPart}-${normalizedName}`;
-  };
-
-  const createSignedUrl = async (ref: StoredMediaRef): Promise<string> => {
-    const { data, error } = await supabase.storage.from(ref.bucket).createSignedUrl(ref.path, 60 * 60 * 24 * 7);
-    if (error || !data?.signedUrl) {
-      throw error || new Error('Could not create signed URL');
+  const createSignedUrl = async (mediaRef: StoredMediaRef): Promise<string> => {
+    if (!firebaseConfig.storageBucket) {
+      throw new Error('Firebase Storage bucket not configured');
     }
-    return data.signedUrl;
+
+    const storage = getStorage();
+    const fileRef = ref(storage, mediaRef.path);
+    
+    try {
+      // Build preview URL from authenticated SDK response so private objects render reliably.
+      const blob = await getBlob(fileRef);
+      const url = URL.createObjectURL(blob);
+      
+      console.log('[SecretNotes] Created storage URL for:', mediaRef.path);
+      return url;
+    } catch (error) {
+      console.error('[SecretNotes] Failed to create URL for:', mediaRef.path, error);
+      throw error || new Error('Could not access file');
+    }
   };
 
   const hydrateMediaPreviews = async (refs: StoredMediaRef[]): Promise<PreviewResult> => {
@@ -323,8 +338,14 @@ const SecretNotes = () => {
         hydrateMediaPreviews(nextVideos),
       ]);
 
-      setImagePreviewItems(imageResult.items);
-      setVideoPreviewItems(videoResult.items);
+      setImagePreviewItems((previous) => {
+        previous.forEach((item) => revokePreviewUrl(item.url));
+        return imageResult.items;
+      });
+      setVideoPreviewItems((previous) => {
+        previous.forEach((item) => revokePreviewUrl(item.url));
+        return videoResult.items;
+      });
 
       const failedCount = imageResult.failed + videoResult.failed;
       if (failedCount > 0) {
@@ -335,8 +356,14 @@ const SecretNotes = () => {
         });
       }
     } catch {
-      setImagePreviewItems([]);
-      setVideoPreviewItems([]);
+      setImagePreviewItems((previous) => {
+        previous.forEach((item) => revokePreviewUrl(item.url));
+        return [];
+      });
+      setVideoPreviewItems((previous) => {
+        previous.forEach((item) => revokePreviewUrl(item.url));
+        return [];
+      });
       toast({
         title: 'Media preview failed',
         description: 'Could not load one or more private media previews.',
@@ -393,22 +420,126 @@ const SecretNotes = () => {
     };
   }, [unlocked, toast]);
 
+  useEffect(() => {
+    setPassphraseSet(Boolean(sessionStorage.getItem(passphraseStorageKey)));
+  }, [user, unlocked]);
+
+  // Handler to open modal for entering passphrase when encrypted content is detected
+  const openEnterPassphraseModal = (encryptedBlob: any) => {
+    setPendingEncryptedBlob(encryptedBlob);
+    setPassphraseMode('enter');
+    setPassphraseInput(SHARED_PASSCODE);
+    setPassphraseError(null);
+    setPassphraseModalOpen(true);
+  };
+
+  const handlePassphraseSubmit = async () => {
+    setPassphraseError(null);
+    if (!passphraseInput || passphraseInput.length < 6) {
+      setPassphraseError('Passphrase must be at least 6 characters');
+      return;
+    }
+
+    if (passphraseMode === 'enter') {
+      if (!pendingEncryptedBlob) return;
+      try {
+        const decrypted = await decryptString(pendingEncryptedBlob, passphraseInput);
+        sessionStorage.setItem(passphraseStorageKey, passphraseInput);
+        setPassphraseSet(true);
+        setPassphraseModalOpen(false);
+        setPendingEncryptedBlob(null);
+
+        // Use decrypted content to hydrate the vault UI
+        const parsed = parseVaultPayload(decrypted);
+        const normalized = await maybeMigrateLegacyMedia(parsed, true);
+
+        setNote(normalized.note);
+        setParagraphs(normalized.paragraphs);
+        setImages(normalized.images);
+        setVideos(normalized.videos);
+        localStorage.setItem(localNoteKey, serializeVaultPayload(normalized));
+        await refreshPreviews(normalized.images, normalized.videos);
+        toast({ title: 'Vault unlocked', description: 'Decrypted successfully for this session.' });
+      } catch (err) {
+        console.error('[SecretNotes] Passphrase decrypt failed', err);
+        setPassphraseError('Could not decrypt with that passphrase');
+      }
+    } else {
+      // set mode
+      if (passphraseInput !== passphraseConfirm) {
+        setPassphraseError('Passphrases do not match');
+        return;
+      }
+      sessionStorage.setItem(passphraseStorageKey, passphraseInput);
+      setPassphraseSet(true);
+      setPassphraseModalOpen(false);
+      toast({ title: 'Passphrase set', description: 'Vault will be encrypted on next save for this session.' });
+
+      // Offer to encrypt and persist now
+      setTimeout(async () => {
+        if (confirm('Encrypt existing vault now and sync to cloud?')) {
+          await persistVaultPayload({ note: note, paragraphs, images, videos });
+        }
+      }, 100);
+    }
+  };
+
   const loadNote = async () => {
-    if (!user) return;
+    if (!user) {
+      console.log('[SecretNotes] No user, cannot load note');
+      return;
+    }
+
+    if (!db || !isFirebaseConfigured) {
+      console.error('[SecretNotes] Firebase not configured', { db: !!db, isFirebaseConfigured });
+      toast({
+        title: 'Firebase not configured',
+        description: 'Check your environment variables (VITE_FIREBASE_*)',
+        variant: 'destructive',
+      });
+      const localFallback = parseVaultPayload(localStorage.getItem(localNoteKey));
+      setNote(localFallback.note);
+      setParagraphs(localFallback.paragraphs);
+      setImages(localFallback.images);
+      setVideos(localFallback.videos);
+      return;
+    }
 
     setNoteLoading(true);
     try {
-      const { data, error } = await supabase
-        .from('secret_notes')
-        .select('content')
-        .eq('user_id', user.id)
-        .single();
+      console.log('[SecretNotes] Loading note for user:', user.id);
+      const docRef = doc(db, 'secret_notes', user.id);
+      const docSnap = await getDoc(docRef);
 
-      if (error && error.code !== 'PGRST116') {
-        throw error;
+      if (!docSnap.exists()) {
+        console.log('[SecretNotes] No document found, creating new note');
       }
 
-      const payload = parseVaultPayload(data?.content || '');
+      let rawContent: string | null = docSnap.exists() ? docSnap.data().content : null;
+
+      // If remote content is encrypted, attempt to decrypt using stored passphrase or prompt
+      if (rawContent) {
+        try {
+          const parsed = JSON.parse(rawContent);
+          if (isEncryptedContent(parsed)) {
+            const stored = sessionStorage.getItem(passphraseStorageKey);
+            if (stored) {
+              const decrypted = await decryptString(parsed, stored);
+              rawContent = decrypted;
+            } else {
+              // Defer decryption to modal flow; open modal and exit load (user will submit passphrase)
+              openEnterPassphraseModal(parsed);
+              setNoteLoading(false);
+              return;
+            }
+          }
+        } catch (err) {
+          console.error('[SecretNotes] Decryption failed', err);
+          throw new Error('Could not decrypt vault with provided passphrase');
+        }
+      }
+
+      const payload = parseVaultPayload(rawContent);
       const normalized = await maybeMigrateLegacyMedia(payload, true);
 
       setNote(normalized.note);
@@ -417,7 +548,18 @@ const SecretNotes = () => {
       setVideos(normalized.videos);
       localStorage.setItem(localNoteKey, serializeVaultPayload(normalized));
       await refreshPreviews(normalized.images, normalized.videos);
-    } catch {
+      
+      console.log('[SecretNotes] Note loaded successfully');
+      if (!docSnap.exists()) {
+        toast({
+          title: 'New vault created',
+          description: 'Your private notes vault is ready to use.',
+        });
+      }
+    } catch (error) {
+      console.error('[SecretNotes] Error loading note:', error);
+      const errorMsg = getErrorMessage(error);
+      
       const localFallback = parseVaultPayload(localStorage.getItem(localNoteKey));
       const normalized = await maybeMigrateLegacyMedia(localFallback, false);
 
@@ -427,9 +569,10 @@ const SecretNotes = () => {
       setVideos(normalized.videos);
       localStorage.setItem(localNoteKey, serializeVaultPayload(normalized));
       await refreshPreviews(normalized.images, normalized.videos);
+      
       toast({
         title: 'Loaded local note',
-        description: 'Cloud sync is unavailable right now, using local backup.',
+        description: `Cloud sync unavailable: ${errorMsg}`,
       });
     } finally {
       setNoteLoading(false);
@@ -471,6 +614,13 @@ const SecretNotes = () => {
     setFailedAttempts(0);
     setUnlocked(true);
     setPasscode('');
+    // If user unlocked using the shared passcode, set it as session passphrase so encrypted vaults can be decrypted
+    try {
+      sessionStorage.setItem(passphraseStorageKey, SHARED_PASSCODE);
+      setPassphraseSet(true);
+    } catch {
+      // ignore storage errors
+    }
     lastActivityRef.current = Date.now();
     await loadNote();
   };
@@ -479,22 +629,43 @@ const SecretNotes = () => {
     payload: VaultPayload,
     options?: { title?: string; description?: string; silent?: boolean }
   ) => {
-    if (!user) return;
+    if (!user) {
+      console.log('[SecretNotes] No user, cannot persist');
+      return;
+    }
 
-    const serialized = serializeVaultPayload(payload);
+    if (!db || !isFirebaseConfigured) {
+      console.warn('[SecretNotes] Firebase not configured, saving locally only');
+      const serialized = serializeVaultPayload(payload);
+      localStorage.setItem(localNoteKey, serialized);
+      if (!options?.silent) {
+        toast({
+          title: 'Saved locally',
+          description: 'Firebase not configured. Changes saved to this device only.',
+        });
+      }
+      setNoteSaving(false);
+      return;
+    }
+
+    let serialized = serializeVaultPayload(payload);
+    // If the user has set a passphrase in this session, encrypt before saving
+    try {
+      const stored = sessionStorage.getItem(passphraseStorageKey);
+      if (stored) {
+        const encrypted = await encryptString(serialized, stored);
+        serialized = JSON.stringify(encrypted);
+      }
+    } catch (err) {
+      console.error('[SecretNotes] Encryption failed', err);
+      toast({ title: 'Encryption failed', description: 'Could not encrypt vault. Saving locally only.', variant: 'destructive' });
+      // fall through and save plain if encryption fails locally
+    }
     setNoteSaving(true);
     try {
-      const { error } = await supabase
-        .from('secret_notes')
-        .upsert(
-          {
-            user_id: user.id,
-            content: serialized,
-          },
-          { onConflict: 'user_id' }
-        );
-
-      if (error) throw error;
+      console.log('[SecretNotes] Persisting vault for user:', user.id);
+      const docRef = doc(db, 'secret_notes', user.id);
+      await setDoc(docRef, { content: serialized });
 
       localStorage.setItem(localNoteKey, serialized);
 
@@ -504,12 +675,16 @@ const SecretNotes = () => {
           description: options?.description || 'Synced with your account across devices.',
         });
       }
-    } catch {
+      console.log('[SecretNotes] Vault persisted successfully');
+    } catch (error) {
+      console.error('[SecretNotes] Error persisting vault:', error);
+      const errorMsg = getErrorMessage(error);
+      
       localStorage.setItem(localNoteKey, serialized);
       if (!options?.silent) {
         toast({
           title: 'Saved locally',
-          description: 'Cloud sync failed, but your note is safe on this device.',
+          description: `Cloud sync failed: ${errorMsg}`,
         });
       }
     } finally {
@@ -563,6 +738,24 @@ const SecretNotes = () => {
     );
   };
 
+  const setVaultPassphrase = () => {
+    if (!user) return;
+    const existing = sessionStorage.getItem(passphraseStorageKey);
+    if (existing) {
+      if (!confirm('A passphrase is already set for this session. Clear it?')) return;
+      sessionStorage.removeItem(passphraseStorageKey);
+      toast({ title: 'Passphrase cleared', description: 'Vault will no longer be encrypted for this session.' });
+      setPassphraseSet(false);
+      return;
+    }
+    // Open modal to set passphrase (with confirmation) instead of using prompt
+    setPassphraseMode('set');
+    setPassphraseInput('');
+    setPassphraseConfirm('');
+    setPassphraseError(null);
+    setPassphraseModalOpen(true);
+  };
+
   const lockNotes = () => {
     setUnlocked(false);
     setPasscode('');
@@ -570,11 +763,16 @@ const SecretNotes = () => {
 
   const uploadFilesToBucket = async (
     files: FileList,
-    bucket: BucketId,
+    storagePath: StorageType,
     batchSize: number
   ): Promise<UploadResult> => {
     if (!user) return { uploadedRefs: [], failedCount: files.length };
 
+    if (!isFirebaseConfigured) {
+      throw new Error('Firebase Storage not configured. Check environment variables.');
+    }
+
+    const storage = getStorage();
     const selected = Array.from(files);
     const uploadedRefs: StoredMediaRef[] = [];
     let failedCount = 0;
@@ -584,10 +782,12 @@ const SecretNotes = () => {
 
       const chunkResults = await Promise.allSettled(
         chunk.map(async (file) => {
-          const path = buildStoragePath(file.name);
-          const { error } = await supabase.storage.from(bucket).upload(path, file, { upsert: false });
-          if (error) throw error;
-          return { bucket, path } as StoredMediaRef;
+          const path = `${storagePath}/${user.id}/${Date.now()}-${crypto.randomUUID()}-${file.name}`;
+          const fileRef = ref(storage, path);
+          console.log('[SecretNotes] Uploading file:', path);
+          await uploadBytes(fileRef, file);
+          console.log('[SecretNotes] File uploaded:', path);
+          return { path } as StoredMediaRef;
         })
       );
 
@@ -595,6 +795,7 @@ const SecretNotes = () => {
         if (result.status === 'fulfilled') {
           uploadedRefs.push(result.value);
         } else {
+          console.error('[SecretNotes] Upload failed:', result.reason);
           failedCount += 1;
         }
       }
@@ -603,7 +804,7 @@ const SecretNotes = () => {
     return { uploadedRefs, failedCount };
   };
 
-  const checkSingleBucketHealth = async (bucket: BucketId): Promise<BucketHealth> => {
+  const checkSingleBucketHealth = async (storagePath: StorageType): Promise<BucketHealth> => {
     if (!user) {
       return {
         ok: false,
@@ -611,42 +812,38 @@ const SecretNotes = () => {
       };
     }
 
-    const userFolder = `${user.id}`;
-    const probePath = `${userFolder}/health-check-${crypto.randomUUID()}.txt`;
-
-    const listResult = await supabase.storage.from(bucket).list(userFolder, { limit: 1 });
-    if (listResult.error) {
+    if (!isFirebaseConfigured) {
       return {
         ok: false,
-        message: `List failed: ${listResult.error.message}`,
+        message: 'Firebase not configured (check env vars)',
       };
     }
 
-    const probeBlob = new Blob(['ok'], { type: 'text/plain' });
-    const uploadResult = await supabase.storage.from(bucket).upload(probePath, probeBlob, {
-      upsert: false,
-      contentType: 'text/plain',
-    });
+    const storage = getStorage();
+    const probePath = `${storagePath}/${user.id}/health-check-${crypto.randomUUID()}.txt`;
 
-    if (uploadResult.error) {
+    try {
+      console.log(`[SecretNotes] Testing ${storagePath}...`);
+      const probeBlob = new Blob(['ok'], { type: 'text/plain' });
+      const fileRef = ref(storage, probePath);
+      await uploadBytes(fileRef, probeBlob);
+      console.log(`[SecretNotes] ${storagePath} upload successful`);
+      
+      await deleteObject(fileRef);
+      console.log(`[SecretNotes] ${storagePath} delete successful`);
+
+      return {
+        ok: true,
+        message: 'Storage and rules working',
+      };
+    } catch (error) {
+      console.error(`[SecretNotes] ${storagePath} health check failed:`, error);
+      const msg = getErrorMessage(error);
       return {
         ok: false,
-        message: `Upload policy failed: ${uploadResult.error.message}`,
+        message: `Health check failed: ${msg}`,
       };
     }
-
-    const removeResult = await supabase.storage.from(bucket).remove([probePath]);
-    if (removeResult.error) {
-      return {
-        ok: false,
-        message: `Delete policy failed: ${removeResult.error.message}`,
-      };
-    }
-
-    return {
-      ok: true,
-      message: 'Bucket and policies are working',
-    };
   };
 
   const runStorageHealthCheck = async () => {
@@ -655,8 +852,8 @@ const SecretNotes = () => {
     setHealthChecking(true);
     try {
       const [imageHealth, videoHealth] = await Promise.all([
-        checkSingleBucketHealth(IMAGE_BUCKET),
-        checkSingleBucketHealth(VIDEO_BUCKET),
+        checkSingleBucketHealth(IMAGE_STORAGE_PATH),
+        checkSingleBucketHealth(VIDEO_STORAGE_PATH),
       ]);
 
       const nextHealth: StorageHealth = {
@@ -671,8 +868,8 @@ const SecretNotes = () => {
       toast({
         title: allGood ? 'Storage healthy' : 'Storage issue detected',
         description: allGood
-          ? 'Both media buckets are ready for upload.'
-          : 'One or more bucket checks failed. See health details below.',
+          ? 'Firebase Storage is ready for uploads.'
+          : 'One or more storage checks failed. See details below.',
         variant: allGood ? 'default' : 'destructive',
       });
     } finally {
@@ -682,26 +879,23 @@ const SecretNotes = () => {
 
   const uploadLegacyDataUrls = async (
     dataUrls: string[],
-    bucket: BucketId,
+    storagePath: StorageType,
     label: string
   ): Promise<StoredMediaRef[]> => {
     if (!user || dataUrls.length === 0) return [];
 
+    const storage = getStorage();
     const uploadedRefs: StoredMediaRef[] = [];
+    
     for (const [index, dataUrl] of dataUrls.entries()) {
       const response = await fetch(dataUrl);
       const blob = await response.blob();
       const extension = (blob.type.split('/')[1] || 'bin').toLowerCase();
-      const path = buildStoragePath(`legacy-${label}-${index + 1}.${extension}`);
+      const path = `${storagePath}/${user.id}/${Date.now()}-${crypto.randomUUID()}-legacy-${label}-${index + 1}.${extension}`;
 
-      const { error } = await supabase.storage.from(bucket).upload(path, blob, {
-        upsert: false,
-        contentType: blob.type,
-      });
-
-      if (error) throw error;
-
-      uploadedRefs.push({ bucket, path });
+      const fileRef = ref(storage, path);
+      await uploadBytes(fileRef, blob);
+      uploadedRefs.push({ path });
     }
 
     return uploadedRefs;
@@ -712,15 +906,15 @@ const SecretNotes = () => {
     persistToCloud: boolean
   ): Promise<VaultPayload> => {
     const hasLegacyMedia = payload.legacyImages.length > 0 || payload.legacyVideos.length > 0;
-    if (!hasLegacyMedia || !user) {
+    if (!hasLegacyMedia || !user || !db) {
       return toStandardPayload(payload);
     }
 
     setUploadingMedia(true);
     try {
       const [migratedImages, migratedVideos] = await Promise.all([
-        uploadLegacyDataUrls(payload.legacyImages, IMAGE_BUCKET, 'image'),
-        uploadLegacyDataUrls(payload.legacyVideos, VIDEO_BUCKET, 'video'),
+        uploadLegacyDataUrls(payload.legacyImages, IMAGE_STORAGE_PATH, 'image'),
+        uploadLegacyDataUrls(payload.legacyVideos, VIDEO_STORAGE_PATH, 'video'),
       ]);
 
       const migratedPayload: VaultPayload = {
@@ -734,11 +928,8 @@ const SecretNotes = () => {
       localStorage.setItem(localNoteKey, serialized);
 
       if (persistToCloud) {
-        const { error } = await supabase
-          .from('secret_notes')
-          .upsert({ user_id: user.id, content: serialized }, { onConflict: 'user_id' });
-
-        if (error) throw error;
+        const docRef = doc(db, 'secret_notes', user.id);
+        await setDoc(docRef, { content: serialized });
       }
 
       toast({
@@ -766,7 +957,7 @@ const SecretNotes = () => {
 
     setUploadingMedia(true);
     try {
-      const { uploadedRefs, failedCount } = await uploadFilesToBucket(files, IMAGE_BUCKET, IMAGE_UPLOAD_BATCH_SIZE);
+      const { uploadedRefs, failedCount } = await uploadFilesToBucket(files, IMAGE_STORAGE_PATH, IMAGE_UPLOAD_BATCH_SIZE);
       const nextImages = [...images, ...uploadedRefs];
       setImages(nextImages);
       await refreshPreviews(nextImages, videos);
@@ -792,9 +983,7 @@ const SecretNotes = () => {
       const reason = getErrorMessage(error);
       toast({
         title: 'Upload failed',
-        description: reason.toLowerCase().includes('bucket not found')
-          ? 'Bucket not found. Create storage bucket: secret-note-images.'
-          : `Could not upload photo(s): ${reason}`,
+        description: `Could not upload photo(s): ${reason}`,
         variant: 'destructive',
       });
     } finally {
@@ -809,7 +998,7 @@ const SecretNotes = () => {
 
     setUploadingMedia(true);
     try {
-      const { uploadedRefs, failedCount } = await uploadFilesToBucket(files, VIDEO_BUCKET, VIDEO_UPLOAD_BATCH_SIZE);
+      const { uploadedRefs, failedCount } = await uploadFilesToBucket(files, VIDEO_STORAGE_PATH, VIDEO_UPLOAD_BATCH_SIZE);
       const nextVideos = [...videos, ...uploadedRefs];
       setVideos(nextVideos);
       await refreshPreviews(images, nextVideos);
@@ -835,9 +1024,7 @@ const SecretNotes = () => {
       const reason = getErrorMessage(error);
       toast({
         title: 'Upload failed',
-        description: reason.toLowerCase().includes('bucket not found')
-          ? 'Bucket not found. Create storage bucket: secret-note-videos.'
-          : `Could not upload video(s): ${reason}`,
+        description: `Could not upload video(s): ${reason}`,
         variant: 'destructive',
       });
     } finally {
@@ -850,12 +1037,19 @@ const SecretNotes = () => {
     const target = images[index];
     const nextImages = images.filter((_, current) => current !== index);
     setImages(nextImages);
-    setImagePreviewItems((prev) => prev.filter((_, current) => current !== index));
+    setImagePreviewItems((prev) => {
+      const removed = prev[index];
+      revokePreviewUrl(removed?.url ?? null);
+      return prev.filter((_, current) => current !== index);
+    });
 
     if (!target) return;
 
-    const { error } = await supabase.storage.from(target.bucket).remove([target.path]);
-    if (error) {
+    try {
+      const storage = getStorage();
+      const fileRef = ref(storage, target.path);
+      await deleteObject(fileRef);
+    } catch {
       toast({
         title: 'Delete failed',
         description: 'Could not remove the photo from storage.',
@@ -878,12 +1072,19 @@ const SecretNotes = () => {
     const target = videos[index];
     const nextVideos = videos.filter((_, current) => current !== index);
     setVideos(nextVideos);
-    setVideoPreviewItems((prev) => prev.filter((_, current) => current !== index));
+    setVideoPreviewItems((prev) => {
+      const removed = prev[index];
+      revokePreviewUrl(removed?.url ?? null);
+      return prev.filter((_, current) => current !== index);
+    });
 
     if (!target) return;
 
-    const { error } = await supabase.storage.from(target.bucket).remove([target.path]);
-    if (error) {
+    try {
+      const storage = getStorage();
+      const fileRef = ref(storage, target.path);
+      await deleteObject(fileRef);
+    } catch {
       toast({
         title: 'Delete failed',
         description: 'Could not remove the video from storage.',
@@ -928,11 +1129,19 @@ const SecretNotes = () => {
       const url = await createSignedUrl(source);
       if (type === 'image') {
         setImagePreviewItems((prev) =>
-          prev.map((item, current) => (current === index ? { ...item, url, previewUnavailable: false } : item))
+          prev.map((item, current) => {
+            if (current !== index) return item;
+            revokePreviewUrl(item.url);
+            return { ...item, url, previewUnavailable: false };
+          })
         );
       } else {
         setVideoPreviewItems((prev) =>
-          prev.map((item, current) => (current === index ? { ...item, url, previewUnavailable: false } : item))
+          prev.map((item, current) => {
+            if (current !== index) return item;
+            revokePreviewUrl(item.url);
+            return { ...item, url, previewUnavailable: false };
+          })
         );
       }
       toast({
@@ -945,6 +1154,40 @@ const SecretNotes = () => {
         description: 'Still unable to load this preview right now.',
         variant: 'destructive',
       });
+    }
+  };
+
+  const downloadImageAt = async (index: number) => {
+    const mediaRef = images[index];
+    if (!mediaRef) return;
+
+    const existingPreview = imagePreviewItems[index]?.url;
+    let temporaryUrl: string | null = null;
+
+    try {
+      const href = existingPreview ?? (await createSignedUrl(mediaRef));
+      if (!existingPreview) {
+        temporaryUrl = href;
+      }
+
+      const fileName = mediaRef.path.split('/').pop() || `vault-image-${index + 1}`;
+      const anchor = document.createElement('a');
+      anchor.href = href;
+      anchor.download = fileName;
+      anchor.rel = 'noopener';
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+    } catch {
+      toast({
+        title: 'Download failed',
+        description: 'Could not download this image right now.',
+        variant: 'destructive',
+      });
+    } finally {
+      if (temporaryUrl) {
+        revokePreviewUrl(temporaryUrl);
+      }
     }
   };
 
@@ -1012,8 +1255,12 @@ const SecretNotes = () => {
                       {healthChecking ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
                       {healthChecking ? 'Checking...' : 'Check Storage'}
                     </Button>
+                    <Button type="button" variant="ghost" size="sm" className="gap-2" onClick={setVaultPassphrase}>
+                      {passphraseSet ? <Lock className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
+                      {passphraseSet ? 'Clear Passphrase' : 'Set Passphrase'}
+                    </Button>
                   </div>
-                  <p className="text-xs text-muted-foreground">Connected project: {SUPABASE_PROJECT_HOST}</p>
+                  <p className="text-xs text-muted-foreground">Connected to: Firebase Storage</p>
 
                   {storageHealth.checked && (
                     <div className="grid gap-2 sm:grid-cols-2">
@@ -1072,6 +1319,14 @@ const SecretNotes = () => {
                               </button>
                             </div>
                           )}
+                          <button
+                            type="button"
+                            className="absolute left-1 top-1 rounded bg-background/80 p-1"
+                            onClick={() => downloadImageAt(index)}
+                            aria-label="Download photo"
+                          >
+                            <Download className="h-3 w-3" />
+                          </button>
                           <button
                             type="button"
                             className="absolute right-1 top-1 rounded bg-background/80 p-1"
@@ -1172,10 +1427,48 @@ const SecretNotes = () => {
                   </Button>
                 </div>
               </div>
+
+              
             )}
           </CardContent>
         </Card>
       </main>
+
+      <Dialog open={passphraseModalOpen} onOpenChange={setPassphraseModalOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{passphraseMode === 'enter' ? 'Enter Vault Passphrase' : 'Set Vault Passphrase'}</DialogTitle>
+            <DialogDescription>
+              {passphraseMode === 'enter'
+                ? 'This vault is encrypted. Enter your passphrase to decrypt.'
+                : 'Choose a passphrase to encrypt your vault. Keep it safe; it cannot be recovered by us.'}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-2">
+            <div>
+              <label className="text-xs font-medium">Passphrase</label>
+              <Input value={passphraseInput} onChange={(e) => setPassphraseInput(e.target.value)} type="password" />
+            </div>
+
+            {passphraseMode === 'set' && (
+              <div>
+                <label className="text-xs font-medium">Confirm passphrase</label>
+                <Input value={passphraseConfirm} onChange={(e) => setPassphraseConfirm(e.target.value)} type="password" />
+              </div>
+            )}
+
+            {passphraseError && <p className="text-sm text-destructive">{passphraseError}</p>}
+          </div>
+
+          <DialogFooter>
+            <DialogClose>
+              <Button variant="outline">Cancel</Button>
+            </DialogClose>
+            <Button onClick={handlePassphraseSubmit} className="ml-2">{passphraseMode === 'enter' ? 'Decrypt' : 'Set passphrase'}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {viewerOpen && currentViewerItem && (
         <div
@@ -1191,6 +1484,17 @@ const SecretNotes = () => {
           >
             <X className="h-5 w-5" />
           </button>
+
+          {viewerType === 'image' && currentViewerItem && (
+            <button
+              type="button"
+              className="absolute right-16 top-4 rounded-full bg-white/10 p-2 text-white hover:bg-white/20"
+              onClick={() => downloadImageAt(viewerIndex)}
+              aria-label="Download image"
+            >
+              <Download className="h-5 w-5" />
+            </button>
+          )}
 
           <button
             type="button"

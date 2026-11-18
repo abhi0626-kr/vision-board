@@ -1,6 +1,6 @@
 # Vision Board
 
-A beautiful, modern digital vision board application built with React, TypeScript, and Supabase. Create and organize your dreams, goals, philosophies, and inspirations in one elegant sanctuary.
+A beautiful, modern digital vision board application built with React, TypeScript, and Firebase. Create and organize your dreams, goals, philosophies, and inspirations in one elegant sanctuary.
 
 ![Vision Board](https://i.pinimg.com/736x/db/0e/e2/db0ee2de02e731141a8394b059f54c04.jpg)
 
@@ -12,7 +12,7 @@ A beautiful, modern digital vision board application built with React, TypeScrip
 - **Video Library** - Embed motivational videos from YouTube
 - **Category Filters** - Organize content by Career, Health, Travel, Creativity, Relationships, and Personal
 - **Focus Mode** - Distraction-free viewing experience
-- **Real-time Sync** - All data synced with Supabase backend
+- **Real-time Sync** - All data synced with Cloud Firebase Firestore & Storage
 - **Responsive Design** - Beautiful on all devices
 
 ## 🎨 Design
@@ -28,8 +28,8 @@ The application features a warm, sophisticated color palette inspired by natural
 
 ### Prerequisites
 
-- Node.js 18+ or Bun
-- Supabase account (for backend)
+- Node.js 18+
+- Firebase project (Authentication, Firestore Database, and Storage enabled)
 
 ### Installation
 
@@ -42,45 +42,52 @@ cd vision-board
 2. Install dependencies:
 ```bash
 npm install
-# or
-bun install
 ```
 
 3. Set up environment variables:
-Create a `.env` file in the root directory:
+Create a `.env` or `.env.local` file in the root directory:
 ```env
-VITE_SUPABASE_URL=your_supabase_url
-VITE_SUPABASE_ANON_KEY=your_supabase_anon_key
+VITE_FIREBASE_API_KEY="your_api_key"
+VITE_FIREBASE_AUTH_DOMAIN="your_project_id.firebaseapp.com"
+VITE_FIREBASE_PROJECT_ID="your_project_id"
+VITE_FIREBASE_STORAGE_BUCKET="your_project_id.appspot.com"
+VITE_FIREBASE_MESSAGING_SENDER_ID="your_sender_id"
+VITE_FIREBASE_APP_ID="your_app_id"
+VITE_FIREBASE_MEASUREMENT_ID="your_measurement_id"
 ```
 
 4. Run the development server:
 ```bash
 npm run dev
-# or
-bun dev
 ```
 
 5. Open [http://localhost:8080](http://localhost:8080) in your browser.
 
-## 🗄️ Database Setup
+## 🗄️ Database Setup (Firebase Firestore)
 
-Run the SQL migration in your Supabase project:
+Firestore collections used by the application:
+- `vision_theories`: Inspirational theories and quotes
+- `vision_wishes`: Goals, dreams, and completion statuses
+- `vision_images`: Curated vision board imagery
+- `vision_videos`: Motivational video links
+- `user_profiles`: User profile settings and aspirations
+- `user_reflections`: Notes, strengths, and weaknesses
+- `secret_notes`: Private end-to-end encrypted notes vault
 
-```sql
--- See supabase/migrations/20260203000000_create_vision_board.sql
+Security rules are defined in `firestore.rules` and `storage.rules`. Deploy them with:
+```bash
+firebase deploy --only firestore:rules,storage
 ```
-
-This will create the necessary tables for theories, wishes, images, and videos.
 
 ## 🛠️ Tech Stack
 
 - **Frontend**: React 18, TypeScript
 - **Styling**: Tailwind CSS, Radix UI
-- **Backend**: Supabase (PostgreSQL)
+- **Backend**: Firebase (Cloud Firestore, Auth, Storage)
 - **Build Tool**: Vite
 - **Routing**: React Router
 - **State Management**: React Query
-- **Authentication**: Supabase Auth
+- **Authentication**: Firebase Auth (Email/Password & Google OAuth)
 
 ## 📁 Project Structure
 

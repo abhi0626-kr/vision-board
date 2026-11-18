@@ -1,3 +1,7 @@
+/**
+ * @deprecated The project has transitioned from Supabase to Firebase (Firestore, Auth, Storage).
+ * Use `@/lib/firebase` for database and authentication services.
+ */
 import { createClient } from '@supabase/supabase-js';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;

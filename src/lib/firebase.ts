@@ -42,16 +42,13 @@ if (auth) {
   void setPersistence(auth, browserLocalPersistence).catch(() => undefined);
 }
 
-// Connect to local emulators when requested via environment variable.
-// Storage also auto-falls back on localhost so uploads keep working in local dev
-// even if the Vite process was started before .env.local was updated.
-const isLocalhost = typeof window !== 'undefined' && ['localhost', '127.0.0.1'].includes(window.location.hostname);
+// Connect to local emulators ONLY when explicitly requested via environment variable.
 const useEmulator = import.meta.env.VITE_USE_FIREBASE_EMULATOR === 'true';
-const useStorageEmulator = import.meta.env.VITE_USE_FIREBASE_STORAGE_EMULATOR === 'true' || useEmulator || isLocalhost;
+const useStorageEmulator = import.meta.env.VITE_USE_FIREBASE_STORAGE_EMULATOR === 'true' || useEmulator;
 const emulatorHost = import.meta.env.VITE_FIREBASE_EMULATOR_HOST || '127.0.0.1';
 const emulatorPorts = {
   auth: Number(import.meta.env.VITE_FIREBASE_AUTH_EMULATOR_PORT || 9099),
-  firestore: Number(import.meta.env.VITE_FIREBASE_FIRESTORE_EMULATOR_PORT || 8080),
+  firestore: Number(import.meta.env.VITE_FIREBASE_FIRESTORE_EMULATOR_PORT || 8085),
   storage: Number(import.meta.env.VITE_FIREBASE_STORAGE_EMULATOR_PORT || 9199),
 };
 

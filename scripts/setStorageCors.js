@@ -49,9 +49,20 @@ async function main() {
 
   const storage = new Storage({
     keyFilename: credentialsPath,
+    projectId: 'vision-board-28cc5',
   });
 
   const bucket = storage.bucket(bucketName);
+
+  const [exists] = await bucket.exists();
+  if (!exists) {
+    console.log('\nBucket does not exist yet. Creating it now...');
+    await storage.createBucket(bucketName, {
+      location: 'US',
+      storageClass: 'STANDARD',
+    });
+    console.log('Bucket created successfully.');
+  }
 
   await bucket.setCorsConfiguration(corsRules);
   console.log('\nCORS configuration updated successfully.');

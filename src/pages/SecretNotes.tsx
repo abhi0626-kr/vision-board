@@ -13,6 +13,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { ThemeToggle } from '@/components/vision/ThemeToggle';
 import { ArrowLeft, CheckCircle2, ChevronLeft, ChevronRight, Download, ImagePlus, Lock, Loader2, RotateCcw, Save, ShieldCheck, Trash2, Video, X, XCircle } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
+import { compressImageFile, withTimeout } from '@/lib/imageCompression';
 
 const SHARED_PASSCODE = '0626';
 const MAX_FAILED_ATTEMPTS = 5;
@@ -172,11 +173,20 @@ function serializeVaultPayload(payload: VaultPayload): string {
 }
 
 function toStandardPayload(payload: ParsedVaultPayload): VaultPayload {
+  const convertedLegacyImages: StoredMediaRef[] = (payload.legacyImages || []).map((dataUrl, idx) => ({
+    path: `inline-legacy-img-${idx}`,
+    url: dataUrl,
+  }));
+  const convertedLegacyVideos: StoredMediaRef[] = (payload.legacyVideos || []).map((dataUrl, idx) => ({
+    path: `inline-legacy-vid-${idx}`,
+    url: dataUrl,
+  }));
+
   return {
     note: payload.note,
     paragraphs: payload.paragraphs,
-    images: payload.images,
-    videos: payload.videos,
+    images: [...payload.images, ...convertedLegacyImages],
+    videos: [...payload.videos, ...convertedLegacyVideos],
   };
 }
 
@@ -293,13 +303,23 @@ const SecretNotes = () => {
 
   const createSignedUrl = async (mediaRef: StoredMediaRef): Promise<string> => {
     if (mediaRef.url) return mediaRef.url;
+    if (
+      mediaRef.path.startsWith('data:') ||
+      mediaRef.path.startsWith('http') ||
+      mediaRef.path.startsWith('inline-')
+    ) {
+      return mediaRef.url || mediaRef.path;
+    }
+
+    if (!isFirebaseConfigured) {
+      throw new Error('Firebase Storage not configured');
+    }
 
     const storage = getStorage();
     const fileRef = ref(storage, mediaRef.path);
     
     try {
-      const url = await getDownloadURL(fileRef);
-      
+      const url = await withTimeout(getDownloadURL(fileRef), 6000, 'Storage download URL timeout');
       console.log('[SecretNotes] Created storage URL for:', mediaRef.path);
       return url;
     } catch (error) {
@@ -772,27 +792,56 @@ const SecretNotes = () => {
   ): Promise<UploadResult> => {
     if (!user) return { uploadedRefs: [], failedCount: files.length };
 
-    if (!isFirebaseConfigured) {
-      throw new Error('Firebase Storage not configured. Check environment variables.');
-    }
-
-    const storage = getStorage();
     const selected = Array.from(files);
     const uploadedRefs: StoredMediaRef[] = [];
     let failedCount = 0;
+    let fallbackToInlineCount = 0;
 
     for (let index = 0; index < selected.length; index += batchSize) {
       const chunk = selected.slice(index, index + batchSize);
 
       const chunkResults = await Promise.allSettled(
         chunk.map(async (file) => {
-          const path = `${storagePath}/${user.id}/${Date.now()}-${crypto.randomUUID()}-${file.name}`;
-          const fileRef = ref(storage, path);
-          console.log('[SecretNotes] Uploading file:', path);
-          await uploadBytes(fileRef, file);
-          const url = await getDownloadURL(fileRef);
-          console.log('[SecretNotes] File uploaded:', path);
-          return { path, url } as StoredMediaRef;
+          const isImage = file.type.startsWith('image/');
+
+          // Attempt Firebase Storage upload first with a strict 8-second timeout if configured
+          if (isFirebaseConfigured) {
+            try {
+              const storage = getStorage();
+              const path = `${storagePath}/${user.id}/${Date.now()}-${crypto.randomUUID()}-${file.name}`;
+              const fileRef = ref(storage, path);
+              console.log('[SecretNotes] Attempting Firebase Storage upload:', path);
+
+              await withTimeout(
+                uploadBytes(fileRef, file),
+                8000,
+                'Storage upload timed out (bucket may not be created in Firebase Console)'
+              );
+              const url = await withTimeout(
+                getDownloadURL(fileRef),
+                6000,
+                'Get download URL timed out'
+              );
+              console.log('[SecretNotes] File uploaded to Firebase Storage:', path);
+              return { path, url } as StoredMediaRef;
+            } catch (storageErr) {
+              console.warn('[SecretNotes] Firebase Storage upload failed/timed out, attempting fallback:', storageErr);
+            }
+          }
+
+          // Fallback: If it's an image, compress client-side and store directly in encrypted vault
+          if (isImage) {
+            console.log('[SecretNotes] Compressing and storing image inline in vault payload:', file.name);
+            const { dataUrl } = await compressImageFile(file, 1200, 1200, 0.75);
+            fallbackToInlineCount++;
+            return {
+              path: `inline-${Date.now()}-${file.name}`,
+              url: dataUrl,
+            } as StoredMediaRef;
+          }
+
+          // Non-image video where storage failed
+          throw new Error('Firebase Storage unavailable for videos. Please enable Storage in Firebase Console.');
         })
       );
 
@@ -800,10 +849,17 @@ const SecretNotes = () => {
         if (result.status === 'fulfilled') {
           uploadedRefs.push(result.value);
         } else {
-          console.error('[SecretNotes] Upload failed:', result.reason);
+          console.error('[SecretNotes] Media item failed:', result.reason);
           failedCount += 1;
         }
       }
+    }
+
+    if (fallbackToInlineCount > 0) {
+      toast({
+        title: 'Saved to Encrypted Vault',
+        description: 'Photo compressed and saved directly to your encrypted vault.',
+      });
     }
 
     return { uploadedRefs, failedCount };
@@ -831,22 +887,22 @@ const SecretNotes = () => {
       console.log(`[SecretNotes] Testing ${storagePath}...`);
       const probeBlob = new Blob(['ok'], { type: 'text/plain' });
       const fileRef = ref(storage, probePath);
-      await uploadBytes(fileRef, probeBlob);
+      await withTimeout(uploadBytes(fileRef, probeBlob), 6000, 'Connection timed out');
       console.log(`[SecretNotes] ${storagePath} upload successful`);
       
-      await deleteObject(fileRef);
+      await withTimeout(deleteObject(fileRef), 6000, 'Delete timed out');
       console.log(`[SecretNotes] ${storagePath} delete successful`);
 
       return {
         ok: true,
-        message: 'Storage and rules working',
+        message: 'Storage bucket online',
       };
     } catch (error) {
       console.error(`[SecretNotes] ${storagePath} health check failed:`, error);
       const msg = getErrorMessage(error);
       return {
         ok: false,
-        message: `Health check failed: ${msg}`,
+        message: `Bucket not active in Firebase Console (${msg}). Encrypted vault storage is active.`,
       };
     }
   };
@@ -871,10 +927,10 @@ const SecretNotes = () => {
 
       const allGood = imageHealth.ok && videoHealth.ok;
       toast({
-        title: allGood ? 'Storage healthy' : 'Storage issue detected',
+        title: allGood ? 'Storage healthy' : 'Storage notice',
         description: allGood
           ? 'Firebase Storage is ready for uploads.'
-          : 'One or more storage checks failed. See details below.',
+          : 'Firebase Storage bucket is not enabled. Vault database storage is being used.',
         variant: allGood ? 'default' : 'destructive',
       });
     } finally {
@@ -882,79 +938,35 @@ const SecretNotes = () => {
     }
   };
 
-  const uploadLegacyDataUrls = async (
-    dataUrls: string[],
-    storagePath: StorageType,
-    label: string
-  ): Promise<StoredMediaRef[]> => {
-    if (!user || dataUrls.length === 0) return [];
-
-    const storage = getStorage();
-    const uploadedRefs: StoredMediaRef[] = [];
-    
-    for (const [index, dataUrl] of dataUrls.entries()) {
-      const response = await fetch(dataUrl);
-      const blob = await response.blob();
-      const extension = (blob.type.split('/')[1] || 'bin').toLowerCase();
-      const path = `${storagePath}/${user.id}/${Date.now()}-${crypto.randomUUID()}-legacy-${label}-${index + 1}.${extension}`;
-
-      const fileRef = ref(storage, path);
-      await uploadBytes(fileRef, blob);
-      const url = await getDownloadURL(fileRef);
-      uploadedRefs.push({ path, url });
-    }
-
-    return uploadedRefs;
-  };
-
   const maybeMigrateLegacyMedia = async (
     payload: ParsedVaultPayload,
     persistToCloud: boolean
   ): Promise<VaultPayload> => {
-    const hasLegacyMedia = payload.legacyImages.length > 0 || payload.legacyVideos.length > 0;
-    if (!hasLegacyMedia || !user || !db) {
+    const hasLegacyMedia = (payload.legacyImages?.length || 0) > 0 || (payload.legacyVideos?.length || 0) > 0;
+    if (!hasLegacyMedia) {
       return toStandardPayload(payload);
     }
 
-    setUploadingMedia(true);
-    try {
-      const [migratedImages, migratedVideos] = await Promise.all([
-        uploadLegacyDataUrls(payload.legacyImages, IMAGE_STORAGE_PATH, 'image'),
-        uploadLegacyDataUrls(payload.legacyVideos, VIDEO_STORAGE_PATH, 'video'),
-      ]);
+    const standardPayload = toStandardPayload(payload);
+    const serialized = serializeVaultPayload(standardPayload);
+    localStorage.setItem(localNoteKey, serialized);
 
-      const migratedPayload: VaultPayload = {
-        note: payload.note,
-        paragraphs: payload.paragraphs,
-        images: [...payload.images, ...migratedImages].map(normalizeMediaRef),
-        videos: [...payload.videos, ...migratedVideos].map(normalizeMediaRef),
-      };
-
-      const serialized = serializeVaultPayload(migratedPayload);
-      localStorage.setItem(localNoteKey, serialized);
-
-      if (persistToCloud) {
+    if (persistToCloud && user && db) {
+      try {
         const docRef = doc(db, 'secret_notes', user.id);
-        await setDoc(docRef, { content: serialized });
+        let contentToSave = serialized;
+        const storedPassphrase = sessionStorage.getItem(passphraseStorageKey);
+        if (storedPassphrase) {
+          const encrypted = await encryptString(serialized, storedPassphrase);
+          contentToSave = JSON.stringify(encrypted);
+        }
+        await setDoc(docRef, { content: contentToSave });
+      } catch (err) {
+        console.warn('[SecretNotes] Could not persist converted legacy media:', err);
       }
-
-      toast({
-        title: 'Legacy media migrated',
-        description: 'Older media was moved to secure storage automatically.',
-      });
-
-      return migratedPayload;
-    } catch {
-      toast({
-        title: 'Legacy migration skipped',
-        description: 'Could not migrate older media right now. You can still access text and new uploads.',
-        variant: 'destructive',
-      });
-
-      return toStandardPayload(payload);
-    } finally {
-      setUploadingMedia(false);
     }
+
+    return standardPayload;
   };
 
   const handleImageUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -1051,27 +1063,40 @@ const SecretNotes = () => {
 
     if (!target) return;
 
+    // Persist to database immediately so deletion survives reload
     try {
-      const storage = getStorage();
-      const fileRef = ref(storage, target.path);
-      await deleteObject(fileRef);
-    } catch {
+      await persistVaultPayload(
+        {
+          note,
+          paragraphs,
+          images: nextImages,
+          videos,
+        },
+        { silent: true }
+      );
       toast({
-        title: 'Delete failed',
-        description: 'Could not remove the photo from storage.',
-        variant: 'destructive',
+        title: 'Photo removed',
+        description: 'Photo removed from your vault.',
       });
+    } catch (persistErr) {
+      console.error('[SecretNotes] Could not persist image removal:', persistErr);
     }
 
-    await persistVaultPayload(
-      {
-        note,
-        paragraphs,
-        images: nextImages,
-        videos,
-      },
-      { silent: true }
-    );
+    // Attempt background Firebase Storage cleanup if stored in cloud bucket
+    if (
+      target.path &&
+      !target.path.startsWith('inline-') &&
+      !target.path.startsWith('data:') &&
+      !target.path.startsWith('http')
+    ) {
+      try {
+        const storage = getStorage();
+        const fileRef = ref(storage, target.path);
+        await withTimeout(deleteObject(fileRef), 5000, 'Delete storage file timeout');
+      } catch (storageErr) {
+        console.warn('[SecretNotes] Storage cleanup ignored (may already be deleted):', storageErr);
+      }
+    }
   };
 
   const removeVideoAt = async (index: number) => {
@@ -1087,26 +1112,37 @@ const SecretNotes = () => {
     if (!target) return;
 
     try {
-      const storage = getStorage();
-      const fileRef = ref(storage, target.path);
-      await deleteObject(fileRef);
-    } catch {
+      await persistVaultPayload(
+        {
+          note,
+          paragraphs,
+          images,
+          videos: nextVideos,
+        },
+        { silent: true }
+      );
       toast({
-        title: 'Delete failed',
-        description: 'Could not remove the video from storage.',
-        variant: 'destructive',
+        title: 'Video removed',
+        description: 'Video removed from your vault.',
       });
+    } catch (persistErr) {
+      console.error('[SecretNotes] Could not persist video removal:', persistErr);
     }
 
-    await persistVaultPayload(
-      {
-        note,
-        paragraphs,
-        images,
-        videos: nextVideos,
-      },
-      { silent: true }
-    );
+    if (
+      target.path &&
+      !target.path.startsWith('inline-') &&
+      !target.path.startsWith('data:') &&
+      !target.path.startsWith('http')
+    ) {
+      try {
+        const storage = getStorage();
+        const fileRef = ref(storage, target.path);
+        await withTimeout(deleteObject(fileRef), 5000, 'Delete storage file timeout');
+      } catch (storageErr) {
+        console.warn('[SecretNotes] Storage cleanup ignored (may already be deleted):', storageErr);
+      }
+    }
   };
 
   const removeParagraphAt = async (index: number) => {

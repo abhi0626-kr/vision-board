@@ -1,12 +1,12 @@
 /**
  * Compresses an image file client-side using HTML Canvas.
- * Produces an optimized JPEG data URL to fit within document limits.
+ * Adaptively scales down dimensions and quality to ensure the data URL
+ * stays comfortably under `targetMaxChars` (~200KB) so the encrypted
+ * vault document never exceeds Firestore's 1MB single-document limit.
  */
 export async function compressImageFile(
   file: File,
-  maxWidth = 1200,
-  maxHeight = 1200,
-  quality = 0.75
+  targetMaxChars = 220_000
 ): Promise<{ dataUrl: string; size: number }> {
   return new Promise((resolve, reject) => {
     if (!file.type.startsWith('image/')) {
@@ -20,36 +20,48 @@ export async function compressImageFile(
       const img = new Image();
       img.onerror = () => reject(new Error('Failed to parse image data'));
       img.onload = () => {
-        let { width, height } = img;
-
-        if (width > maxWidth || height > maxHeight) {
-          if (width / height > maxWidth / maxHeight) {
-            height = Math.round((height * maxWidth) / width);
-            width = maxWidth;
-          } else {
-            width = Math.round((width * maxHeight) / height);
-            height = maxHeight;
+        const renderCanvas = (maxDimension: number, quality: number): string => {
+          let { width, height } = img;
+          if (width > maxDimension || height > maxDimension) {
+            if (width > height) {
+              height = Math.round((height * maxDimension) / width);
+              width = maxDimension;
+            } else {
+              width = Math.round((width * maxDimension) / height);
+              height = maxDimension;
+            }
           }
+
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.max(1, width);
+          canvas.height = Math.max(1, height);
+          const ctx = canvas.getContext('2d');
+          if (!ctx) return reader.result as string;
+
+          ctx.drawImage(img, 0, 0, width, height);
+          return canvas.toDataURL('image/jpeg', quality);
+        };
+
+        // Pass 1: standard web resolution (850px, quality 0.7)
+        let result = renderCanvas(850, 0.7);
+
+        // Pass 2: scale down if still exceeding target size
+        if (result.length > targetMaxChars) {
+          result = renderCanvas(680, 0.6);
         }
 
-        const canvas = document.createElement('canvas');
-        canvas.width = Math.max(1, width);
-        canvas.height = Math.max(1, height);
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          const rawResult = reader.result as string;
-          resolve({ dataUrl: rawResult, size: file.size });
-          return;
+        // Pass 3: further compression if needed
+        if (result.length > targetMaxChars) {
+          result = renderCanvas(520, 0.5);
         }
 
-        ctx.drawImage(img, 0, 0, width, height);
+        // Pass 4: aggressive fallback for extremely high-detail images
+        if (result.length > targetMaxChars) {
+          result = renderCanvas(400, 0.4);
+        }
 
-        // Standardize on JPEG compression for broad compatibility and small size
-        const mimeType = 'image/jpeg';
-        const dataUrl = canvas.toDataURL(mimeType, quality);
-        const approxSize = Math.round((dataUrl.length * 3) / 4);
-
-        resolve({ dataUrl, size: approxSize });
+        const approxSize = Math.round((result.length * 3) / 4);
+        resolve({ dataUrl: result, size: approxSize });
       };
       img.src = reader.result as string;
     };

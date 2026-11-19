@@ -687,7 +687,16 @@ const SecretNotes = () => {
     }
     setNoteSaving(true);
     try {
-      console.log('[SecretNotes] Persisting vault for user:', user.id);
+      if (serialized.length > 950_000) {
+        toast({
+          title: 'Vault exceeds database limit',
+          description: 'Document size exceeded 1MB. Please remove some photos or enable Firebase Storage in Firebase Console.',
+          variant: 'destructive',
+        });
+        throw new Error('Vault payload exceeds Firestore 1MB document limit');
+      }
+
+      console.log('[SecretNotes] Persisting vault for user:', user.id, 'payload size:', serialized.length);
       const docRef = doc(db, 'secret_notes', user.id);
       await setDoc(docRef, { content: serialized });
 
@@ -806,33 +815,43 @@ const SecretNotes = () => {
 
           // Attempt Firebase Storage upload first with a strict 8-second timeout if configured
           if (isFirebaseConfigured) {
-            try {
-              const storage = getStorage();
-              const path = `${storagePath}/${user.id}/${Date.now()}-${crypto.randomUUID()}-${file.name}`;
-              const fileRef = ref(storage, path);
-              console.log('[SecretNotes] Attempting Firebase Storage upload:', path);
+            const possibleBuckets = [
+              firebaseConfig.storageBucket,
+              firebaseConfig.projectId ? `${firebaseConfig.projectId}.firebasestorage.app` : null,
+              firebaseConfig.projectId ? `${firebaseConfig.projectId}.appspot.com` : null,
+            ].filter(Boolean) as string[];
 
-              await withTimeout(
-                uploadBytes(fileRef, file),
-                8000,
-                'Storage upload timed out (bucket may not be created in Firebase Console)'
-              );
-              const url = await withTimeout(
-                getDownloadURL(fileRef),
-                6000,
-                'Get download URL timed out'
-              );
-              console.log('[SecretNotes] File uploaded to Firebase Storage:', path);
-              return { path, url } as StoredMediaRef;
-            } catch (storageErr) {
-              console.warn('[SecretNotes] Firebase Storage upload failed/timed out, attempting fallback:', storageErr);
+            const uniqueBuckets = Array.from(new Set(possibleBuckets));
+
+            for (const bucketName of uniqueBuckets) {
+              try {
+                const storage = bucketName ? getStorage(undefined, `gs://${bucketName}`) : getStorage();
+                const path = `${storagePath}/${user.id}/${Date.now()}-${crypto.randomUUID()}-${file.name}`;
+                const fileRef = ref(storage, path);
+                console.log(`[SecretNotes] Attempting Firebase Storage upload to ${bucketName}:`, path);
+
+                await withTimeout(
+                  uploadBytes(fileRef, file),
+                  8000,
+                  `Storage upload to ${bucketName} timed out (bucket may not be created in Firebase Console)`
+                );
+                const url = await withTimeout(
+                  getDownloadURL(fileRef),
+                  6000,
+                  'Get download URL timed out'
+                );
+                console.log('[SecretNotes] File uploaded to Firebase Storage:', path);
+                return { path, url } as StoredMediaRef;
+              } catch (storageErr) {
+                console.warn(`[SecretNotes] Firebase Storage upload to ${bucketName} failed/timed out:`, storageErr);
+              }
             }
           }
 
-          // Fallback: If it's an image, compress client-side and store directly in encrypted vault
+          // Fallback: If it's an image, adaptively compress to ~150KB and store directly in encrypted vault
           if (isImage) {
-            console.log('[SecretNotes] Compressing and storing image inline in vault payload:', file.name);
-            const { dataUrl } = await compressImageFile(file, 1200, 1200, 0.75);
+            console.log('[SecretNotes] Adaptively compressing and storing image inline in vault payload:', file.name);
+            const { dataUrl } = await compressImageFile(file, 220_000);
             fallbackToInlineCount++;
             return {
               path: `inline-${Date.now()}-${file.name}`,
@@ -880,31 +899,40 @@ const SecretNotes = () => {
       };
     }
 
-    const storage = getStorage();
-    const probePath = `${storagePath}/${user.id}/health-check-${crypto.randomUUID()}.txt`;
+    const possibleBuckets = [
+      firebaseConfig.storageBucket,
+      firebaseConfig.projectId ? `${firebaseConfig.projectId}.firebasestorage.app` : null,
+      firebaseConfig.projectId ? `${firebaseConfig.projectId}.appspot.com` : null,
+    ].filter(Boolean) as string[];
 
-    try {
-      console.log(`[SecretNotes] Testing ${storagePath}...`);
-      const probeBlob = new Blob(['ok'], { type: 'text/plain' });
-      const fileRef = ref(storage, probePath);
-      await withTimeout(uploadBytes(fileRef, probeBlob), 6000, 'Connection timed out');
-      console.log(`[SecretNotes] ${storagePath} upload successful`);
-      
-      await withTimeout(deleteObject(fileRef), 6000, 'Delete timed out');
-      console.log(`[SecretNotes] ${storagePath} delete successful`);
+    const uniqueBuckets = Array.from(new Set(possibleBuckets));
+    let lastError = 'No bucket found';
 
-      return {
-        ok: true,
-        message: 'Storage bucket online',
-      };
-    } catch (error) {
-      console.error(`[SecretNotes] ${storagePath} health check failed:`, error);
-      const msg = getErrorMessage(error);
-      return {
-        ok: false,
-        message: `Bucket not active in Firebase Console (${msg}). Encrypted vault storage is active.`,
-      };
+    for (const bucketName of uniqueBuckets) {
+      try {
+        console.log(`[SecretNotes] Testing ${storagePath} on bucket ${bucketName}...`);
+        const storage = bucketName ? getStorage(undefined, `gs://${bucketName}`) : getStorage();
+        const probePath = `${storagePath}/${user.id}/health-check-${crypto.randomUUID()}.txt`;
+        const probeBlob = new Blob(['ok'], { type: 'text/plain' });
+        const fileRef = ref(storage, probePath);
+
+        await withTimeout(uploadBytes(fileRef, probeBlob), 5000, 'Connection timed out');
+        await withTimeout(deleteObject(fileRef), 5000, 'Delete timed out');
+
+        return {
+          ok: true,
+          message: `Storage bucket '${bucketName}' online`,
+        };
+      } catch (error) {
+        lastError = getErrorMessage(error);
+        console.warn(`[SecretNotes] Health check on ${bucketName} failed:`, lastError);
+      }
     }
+
+    return {
+      ok: false,
+      message: `Firebase Storage uninitialized (${lastError}). Encrypted vault storage is active.`,
+    };
   };
 
   const runStorageHealthCheck = async () => {

@@ -4,7 +4,7 @@ import { useAuth } from '@/lib/auth';
 import { db, firebaseConfig, isFirebaseConfigured } from '@/lib/firebase';
 import { encryptString, decryptString, isEncryptedContent } from '@/lib/crypto';
 import { getStorage, ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { doc, getDoc, setDoc, deleteDoc } from 'firebase/firestore';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogFooter, DialogTitle, DialogDescription, DialogClose } from '@/components/ui/dialog';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -169,7 +169,24 @@ function parseVaultPayload(raw: string | null): ParsedVaultPayload {
 }
 
 function serializeVaultPayload(payload: VaultPayload): string {
-  return JSON.stringify(payload);
+  const strippedImages = payload.images.map((img) => {
+    if (img.path && img.path.startsWith('media/')) {
+      return { path: img.path, name: (img as any).name };
+    }
+    return img;
+  });
+  const strippedVideos = payload.videos.map((vid) => {
+    if (vid.path && vid.path.startsWith('media/')) {
+      return { path: vid.path, name: (vid as any).name };
+    }
+    return vid;
+  });
+
+  return JSON.stringify({
+    ...payload,
+    images: strippedImages,
+    videos: strippedVideos,
+  });
 }
 
 function toStandardPayload(payload: ParsedVaultPayload): VaultPayload {
@@ -309,6 +326,29 @@ const SecretNotes = () => {
       mediaRef.path.startsWith('inline-')
     ) {
       return mediaRef.url || mediaRef.path;
+    }
+
+    // Media stored in subcollection (free tier, separate document per media)
+    if (mediaRef.path.startsWith('media/') && user && db) {
+      const mediaId = mediaRef.path.replace('media/', '');
+      const mediaDocRef = doc(db, 'secret_notes', user.id, 'media', mediaId);
+      const mediaSnap = await getDoc(mediaDocRef);
+      if (mediaSnap.exists()) {
+        let raw = mediaSnap.data().content;
+        try {
+          const parsed = JSON.parse(raw);
+          if (isEncryptedContent(parsed)) {
+            const stored = sessionStorage.getItem(passphraseStorageKey);
+            if (stored) {
+              raw = await decryptString(parsed, stored);
+            }
+          }
+        } catch {
+          // raw dataUrl
+        }
+        return raw;
+      }
+      throw new Error('Media document not found in vault');
     }
 
     if (!isFirebaseConfigured) {
@@ -848,13 +888,33 @@ const SecretNotes = () => {
             }
           }
 
-          // Fallback: If it's an image, adaptively compress to ~150KB and store directly in encrypted vault
+          // Fallback: If it's an image, adaptively compress and store in dedicated vault media document
           if (isImage) {
-            console.log('[SecretNotes] Adaptively compressing and storing image inline in vault payload:', file.name);
-            const { dataUrl } = await compressImageFile(file, 220_000);
+            console.log('[SecretNotes] Storing image in dedicated media document:', file.name);
+            const { dataUrl } = await compressImageFile(file, 250_000);
+            const mediaId = `media-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
+
+            let storedContent = dataUrl;
+            const storedPassphrase = sessionStorage.getItem(passphraseStorageKey);
+            if (storedPassphrase) {
+              const encrypted = await encryptString(dataUrl, storedPassphrase);
+              storedContent = JSON.stringify(encrypted);
+            }
+
+            if (user && db) {
+              const mediaDocRef = doc(db, 'secret_notes', user.id, 'media', mediaId);
+              await setDoc(mediaDocRef, {
+                id: mediaId,
+                name: file.name,
+                content: storedContent,
+                createdAt: new Date().toISOString(),
+              });
+            }
+
             fallbackToInlineCount++;
             return {
-              path: `inline-${Date.now()}-${file.name}`,
+              path: `media/${mediaId}`,
+              name: file.name,
               url: dataUrl,
             } as StoredMediaRef;
           }
@@ -1110,9 +1170,21 @@ const SecretNotes = () => {
       console.error('[SecretNotes] Could not persist image removal:', persistErr);
     }
 
+    // Delete subcollection media document if stored in dedicated media collection
+    if (target.path && target.path.startsWith('media/') && user && db) {
+      const mediaId = target.path.replace('media/', '');
+      try {
+        await deleteDoc(doc(db, 'secret_notes', user.id, 'media', mediaId));
+        console.log('[SecretNotes] Subcollection media doc deleted:', mediaId);
+      } catch (err) {
+        console.warn('[SecretNotes] Could not delete subcollection media doc:', err);
+      }
+    }
+
     // Attempt background Firebase Storage cleanup if stored in cloud bucket
     if (
       target.path &&
+      !target.path.startsWith('media/') &&
       !target.path.startsWith('inline-') &&
       !target.path.startsWith('data:') &&
       !target.path.startsWith('http')
@@ -1157,8 +1229,18 @@ const SecretNotes = () => {
       console.error('[SecretNotes] Could not persist video removal:', persistErr);
     }
 
+    if (target.path && target.path.startsWith('media/') && user && db) {
+      const mediaId = target.path.replace('media/', '');
+      try {
+        await deleteDoc(doc(db, 'secret_notes', user.id, 'media', mediaId));
+      } catch (err) {
+        console.warn('[SecretNotes] Could not delete subcollection media doc:', err);
+      }
+    }
+
     if (
       target.path &&
+      !target.path.startsWith('media/') &&
       !target.path.startsWith('inline-') &&
       !target.path.startsWith('data:') &&
       !target.path.startsWith('http')
